@@ -1,0 +1,2 @@
+.public-readonly-notice{margin:0;padding:9px 18px;text-align:center;background:#18243a;color:#a9c8f6;font-size:13px;border-bottom:1px solid #2b3b57}
+#reloadBtn,#coreStockForm,#phaseSave,label:has(#phaseChoice),[data-core-delete]{display:none!important}
