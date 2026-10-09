@@ -1,0 +1,383 @@
+const fmt=n=>n==null?'—':Number(n).toLocaleString('zh-CN',{maximumFractionDigits:2});
+const pct=n=>n==null?'—':`${(Number(n)*100).toFixed(1)}%`;
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const dom=Object.fromEntries(['tradeDate','updateTime','phaseCard','phase','phaseHint','temperatureCard','temperature','temperatureSub','breadthCard','breadth','breadthSub','height','diff','diffSub','limitsCard','limits','limitDiff','turnoverCard','turnover','medianReturn','moveCounts','promotionLadder','sealRate','sealQuality','yesterdayFeedback','feedbackDetail','period','chart','chartSummary','coreStockForm','coreInstrument','coreRole','coreTheme','coreAction','coreFormStatus','coreAnalysis','coreActivePool','coreRecentEntries','relayPeriod','relaySnapshot','relayMatrixHead','relayMatrixBody','temperatureModal','temperatureModalClose','temperaturePeriod','temperatureChart','temperatureChartSummary','temperatureBreakdown','phaseModal','phaseModalClose','phasePeriod','phaseDate','phaseChoice','phaseSave','phaseChart','phaseChartSummary','metricModal','metricModalClose','metricModalTitle','metricModalKicker','metricPeriod','metricChart','metricChartLegend','metricChartSummary','reviewBody','reloadBtn'].map(id=>[id,document.getElementById(id)]));
+let payload,metricMode='breadth',activeMetricCard=null,manualCycles=(()=>{try{return JSON.parse(localStorage.getItem('a-share-manual-cycles')||'{}')}catch{return {}}})();
+const cycleChoices=['主升期','高位分歧','退潮期','退潮冰点','混沌期','混沌冰点','主升启动','主升→分歧','主升'];
+async function loadManualCycles(){
+ try{const r=await fetch(`data/manual_cycles.json?t=${Date.now()}`,{cache:'no-store'});if(!r.ok)return;const saved=await r.json();if(saved&&typeof saved.cycles==='object'){manualCycles={...manualCycles,...saved.cycles};localStorage.setItem('a-share-manual-cycles',JSON.stringify(manualCycles))}}catch{}
+}
+async function persistManualCycles(){
+ const body=JSON.stringify({cycles:manualCycles});
+ try{const r=await fetch('/api/manual-cycles',{method:'POST',headers:{'Content-Type':'application/json'},body,keepalive:true});if(!r.ok)throw Error()}catch{try{navigator.sendBeacon('/api/manual-cycles',new Blob([body],{type:'application/json'}))}catch{}}
+}
+function manualCycleFor(date){return manualCycles[date]||''}
+function manualCycleStates(rows){return rows.map(d=>{const choice=manualCycleFor(d.date);return {display:choice||'未填写',phase:choice||'未填写',regime:choice||'未填写',reason:choice?'人工记录':'尚未填写',action:'以人工周期记录为准',duration:1,since:d.date,momentum:0,participation:'人工判断'}})}
+function refreshCycleEditor(rows){if(!dom.phaseDate||!rows?.length)return;const selected=dom.phaseDate.value||rows.at(-1).date;dom.phaseDate.innerHTML=rows.map(d=>`<option value="${d.date}">${d.date}</option>`).join('');dom.phaseDate.value=rows.some(d=>d.date===selected)?selected:rows.at(-1).date;dom.phaseChoice.value=manualCycleFor(dom.phaseDate.value)}
+
+const clamp=(v,min=0,max=100)=>Math.max(min,Math.min(max,v));
+const hasNumber=v=>v!==null&&v!==''&&Number.isFinite(Number(v));
+const numberOr=(v,fallback)=>hasNumber(v)?Number(v):fallback;
+
+function percentileScore(values,current,higherIsBetter=true){const valid=values.filter(hasNumber).map(Number);if(!hasNumber(current)||!valid.length)return null;const value=Number(current),less=valid.filter(v=>v<value).length,equal=valid.filter(v=>v===value).length,rank=(less+equal*.5)/valid.length*100;return clamp(higherIsBetter?rank:100-rank)}
+function groupScore(parts){const valid=parts.filter(p=>hasNumber(p.score)),weight=valid.reduce((s,p)=>s+p.weight,0);return weight?valid.reduce((s,p)=>s+p.score*p.weight,0)/weight:50}
+function metricPercentile(rows,index,getter,higherIsBetter=true){const start=Math.max(0,index-249),history=rows.slice(start,index+1).map(getter),current=getter(rows[index]);return percentileScore(history,current,higherIsBetter)}
+function linearScore(value,stops){if(!hasNumber(value))return null;const v=Number(value);if(v<=stops[0][0])return stops[0][1];for(let i=1;i<stops.length;i++){const [x1,y1]=stops[i-1],[x2,y2]=stops[i];if(v<=x2)return y1+(y2-y1)*(v-x1)/(x2-x1)}return stops.at(-1)[1]}
+function sampleAdjusted(score,n,target=4){if(!hasNumber(score)||!hasNumber(n)||Number(n)<=0)return null;const confidence=Math.min(1,Number(n)/target);return 50+(Number(score)-50)*confidence}
+function hasRelayDetail(d){return d?.temperature_model_version==='relay-v2'&&hasNumber(d.relay_intraday_median)&&hasNumber(d.relay_intraday_positive)&&hasNumber(d.relay_intraday_nonnegative)}
+function legacyTemperatureAt(rows,index){
+  const ratio=(d,a,b)=>hasNumber(d[a])&&hasNumber(d[b])&&Number(d[a])+Number(d[b])>0?Number(d[a])/(Number(d[a])+Number(d[b])):null;
+  const breadth=groupScore([{weight:10,score:metricPercentile(rows,index,d=>ratio(d,'up_count','down_count'))},{weight:5,score:metricPercentile(rows,index,d=>d.median_return)}]);
+  const limits=groupScore([{weight:8,score:metricPercentile(rows,index,d=>hasNumber(d.limit_up_count)&&hasNumber(d.limit_down_count)?Number(d.limit_up_count)-Number(d.limit_down_count):null)},{weight:12,score:metricPercentile(rows,index,d=>hasNumber(d.seal_rate)?d.seal_rate:hasNumber(d.bomb_rate)?1-Number(d.bomb_rate):null)}]);
+  const leader=groupScore([{weight:8,score:metricPercentile(rows,index,d=>d.highest_board)},{weight:5,score:metricPercentile(rows,index,d=>d.board_2plus_count)},{weight:12,score:rows[index].promotion_method==='fixed_previous_pool'?metricPercentile(rows,index,x=>x.promotion_rate):null}]);
+  const profit=groupScore([{weight:7,score:metricPercentile(rows,index,d=>d.yesterday_limit_avg)},{weight:5,score:metricPercentile(rows,index,d=>d.first_board_premium)},{weight:8,score:metricPercentile(rows,index,d=>d.board_premium)}]);
+  const risk=groupScore([{weight:5,score:metricPercentile(rows,index,d=>d.limit_down_count,false)},{weight:7,score:metricPercentile(rows,index,d=>d.big_loss_count,false)},{weight:3,score:metricPercentile(rows,index,d=>ratio(d,'down5_count','up5_count'),false)},{weight:5,score:metricPercentile(rows,index,d=>d.failed_board_avg)}]);
+  const components={breadth,limits,leader,profit,risk};
+  const rawValue=clamp(breadth*.10+limits*.15+leader*.25+profit*.20+risk*.30);
+  const gate=riskGateAt(rows,index);
+  const value=Math.min(rawValue,gate.cap);
+  return {value:Math.round(value),rawValue:Math.round(rawValue),components,gate,version:'legacy-v1'};
+}
+function marketPressureScore(rows,index){
+ const d=rows[index],prev=rows[index-1]||{},total=numberOr(d.up_count,0)+numberOr(d.down_count,0)+numberOr(d.flat_count,0),ratio=(key)=>total?numberOr(d[key],0)/total:null;
+ const medianChange=hasNumber(d.median_return)&&hasNumber(prev.median_return)?Number(d.median_return)-Number(prev.median_return):null;
+ const contraction=(key)=>hasNumber(d[key])&&hasNumber(prev[key])?(Number(prev[key])-Number(d[key]))/Math.max(5,Number(prev[key])):null;
+ const trend=groupScore([
+  {weight:2,score:linearScore(medianChange,[[-.01,0],[0,50],[.01,100]])},
+  {weight:1,score:linearScore(contraction('down7_count'),[[-1,0],[0,50],[.5,100]])},
+  {weight:1,score:linearScore(contraction('limit_down_count'),[[-1,0],[0,50],[.5,100]])}
+ ]);
+ return groupScore([
+  {weight:7,score:metricPercentile(rows,index,x=>x.median_return)},
+  {weight:5,score:metricPercentile(rows,index,x=>hasNumber(x.up_count)&&hasNumber(x.down_count)&&Number(x.up_count)+Number(x.down_count)>0?Number(x.up_count)/(Number(x.up_count)+Number(x.down_count)):null)},
+  {weight:4,score:metricPercentile(rows,index,x=>{const n=numberOr(x.up_count,0)+numberOr(x.down_count,0)+numberOr(x.flat_count,0);return n&&hasNumber(x.down5_count)?Number(x.down5_count)/n:null},false)},
+  {weight:5,score:metricPercentile(rows,index,x=>{const n=numberOr(x.up_count,0)+numberOr(x.down_count,0)+numberOr(x.flat_count,0);return n&&hasNumber(x.down7_count)?Number(x.down7_count)/n:null},false)},
+  {weight:7,score:metricPercentile(rows,index,x=>x.limit_down_count,false)},
+  {weight:2,score:trend}
+ ]);
+}
+function relayTradabilityScore(rows,index){const d=rows[index];return groupScore([
+ {weight:12,score:linearScore(d.relay_intraday_median,[[-.06,0],[-.04,20],[-.02,40],[0,60],[.01,80],[.03,100]])},
+ {weight:6,score:linearScore(d.relay_intraday_positive,[[.10,0],[.25,20],[.40,45],[.50,60],[.60,80],[.75,100]])},
+ {weight:5,score:linearScore(d.promotion_rate,[[0,0],[.10,30],[.20,55],[.30,75],[.50,100]])},
+ {weight:4,score:linearScore(d.seal_rate,[[.40,0],[.55,30],[.70,60],[.80,80],[.90,100]])},
+ {weight:3,score:metricPercentile(rows,index,x=>x.board_2plus_count)}
+])}
+function failureCostScore(d){return groupScore([
+ {weight:12,score:sampleAdjusted(linearScore(d.relay_failure_median,[[-.10,0],[-.07,10],[-.05,25],[-.03,50],[-.01,75],[0,90],[.03,100]]),d.relay_failure_n)},
+ {weight:7,score:sampleAdjusted(linearScore(d.relay_failure_intraday_median,[[-.10,0],[-.07,10],[-.05,25],[-.03,50],[-.01,75],[0,90],[.03,100]]),d.relay_failure_n)},
+ {weight:7,score:sampleAdjusted(linearScore(d.relay_failure_severe,[[0,100],[.10,80],[.20,60],[.333333,30],[.50,0]]),d.relay_failure_n)},
+ {weight:4,score:sampleAdjusted(linearScore(d.failure_follow_median,[[-.10,0],[-.07,15],[-.04,40],[-.02,65],[0,85],[.03,100]]),d.failure_follow_n)}
+])}
+function highStructureScore(rows,index){const d=rows[index],tiers=d.tier_feedback||{},tierScore=groupScore([
+ {weight:1,score:sampleAdjusted(linearScore(tiers['2']?.total_median,[[-.08,0],[-.05,20],[-.02,50],[0,75],[.03,100]]),tiers['2']?.n,5)},
+ {weight:2,score:sampleAdjusted(linearScore(tiers['3']?.total_median,[[-.08,0],[-.05,20],[-.02,50],[0,75],[.03,100]]),tiers['3']?.n,3)},
+ {weight:3,score:sampleAdjusted(linearScore(tiers['4']?.total_median,[[-.08,0],[-.05,20],[-.02,50],[0,75],[.03,100]]),tiers['4']?.n,2)}
+ ]);return groupScore([
+ {weight:7,score:sampleAdjusted(linearScore(d.high_follow_median,[[-.10,0],[-.07,15],[-.04,40],[-.02,65],[0,85],[.03,100]]),d.high_follow_n,2)},
+ {weight:3,score:sampleAdjusted(linearScore(d.high_follow_intraday_median,[[-.10,0],[-.07,15],[-.04,40],[-.02,65],[0,85],[.03,100]]),d.high_follow_n,2)},
+ {weight:3,score:tierScore},
+ {weight:2,score:metricPercentile(rows,index,x=>x.highest_board)}
+])}
+function breadthBaseScore(rows,index){
+ const d=rows[index],prev=rows[index-1]||{},share=x=>hasNumber(x.up_count)&&hasNumber(x.down_count)&&Number(x.up_count)+Number(x.down_count)>0?Number(x.up_count)/(Number(x.up_count)+Number(x.down_count)):null,current=share(d),prior=share(prev),change=hasNumber(current)&&hasNumber(prior)?current-prior:null;
+ return groupScore([
+  {weight:35,score:linearScore(current,[[.30,0],[.45,30],[.50,50],[.60,80],[.70,100]])},
+  {weight:35,score:linearScore(d.median_return,[[-.02,0],[-.01,20],[0,45],[.005,65],[.015,100]])},
+  {weight:20,score:linearScore(hasNumber(d.mean_return)?d.mean_return:d.median_return,[[-.02,0],[-.01,20],[0,45],[.005,65],[.015,100]])},
+  {weight:10,score:linearScore(change,[[-.15,0],[-.05,30],[0,50],[.08,75],[.15,100]])}
+ ])
+}
+function profitBaseScore(d){const relayN=Object.values(d.tier_feedback||{}).reduce((s,t)=>s+numberOr(t?.n,0),0);return groupScore([
+ {weight:45,score:sampleAdjusted(linearScore(d.relay_total_median,[[-.08,0],[-.04,20],[0,50],[.03,70],[.07,90],[.10,100]]),relayN,7)},
+ {weight:20,score:linearScore(d.first_board_premium,[[-.04,0],[-.02,20],[0,50],[.02,75],[.05,100]])},
+ {weight:20,score:linearScore(d.yesterday_limit_avg,[[-.04,0],[-.02,20],[0,50],[.02,75],[.05,100]])},
+ {weight:15,score:linearScore(d.relay_total_positive,[[.20,0],[.40,35],[.50,50],[.65,75],[.80,100]])}
+])}
+function sealBaseScore(rows,index){const d=rows[index];return groupScore([
+ {weight:70,score:linearScore(d.seal_rate,[[.40,0],[.55,25],[.70,55],[.80,75],[.90,100]])},
+ {weight:30,score:metricPercentile(rows,index,x=>hasNumber(x.limit_up_count)&&hasNumber(x.limit_down_count)?Number(x.limit_up_count)-Number(x.limit_down_count):null)}
+])}
+function continuationBaseScore(rows,index){const d=rows[index];return groupScore([
+ {weight:40,score:linearScore(d.promotion_rate,[[0,0],[.10,25],[.20,50],[.30,75],[.50,100]])},
+ {weight:35,score:sampleAdjusted(linearScore(d.relay_intraday_median,[[-.06,0],[-.03,20],[0,50],[.02,70],[.04,90],[.06,100]]),numberOr(d.board_2plus_count,0),7)},
+ {weight:25,score:sampleAdjusted(linearScore(d.relay_intraday_nonnegative,[[.20,0],[.35,25],[.50,50],[.65,75],[.80,100]]),numberOr(d.board_2plus_count,0),7)}
+])}
+function tailRiskAt(d){
+ const tier4=d.tier_feedback?.['4']||{},penalties=[];let failurePoints=0,highPoints=0,otherPoints=0;
+ const add=(points,label,bucket)=>{penalties.push({points,label,bucket});if(bucket==='failure')failurePoints=Math.max(failurePoints,points);else if(bucket==='high')highPoints=Math.max(highPoints,points);else otherPoints+=points};
+ if(hasNumber(d.relay_failure_median)){const v=Number(d.relay_failure_median);if(v<=-.07)add(15,'断板中位数≤−7%','failure');else if(v<=-.05)add(10,'断板中位数≤−5%','failure');else if(v<=-.03)add(5,'断板中位数≤−3%','failure')}
+ if(numberOr(d.relay_failure_n,0)>=3&&numberOr(d.relay_failure_severe,0)>=.5)add(10,'断板大面过半','failure');
+ if(hasNumber(tier4.total_median)&&Number(tier4.total_median)<=-.07)add(10,'最高板亏损≥7%','high');
+ if(hasNumber(tier4.intraday_median)&&Number(tier4.intraday_median)<=-.15)add(15,'最高板日内跌幅≥15%','high');
+ const skyFloor=hasNumber(tier4.total_median)&&Number(tier4.total_median)<=-.07&&hasNumber(tier4.intraday_median)&&Number(tier4.intraday_median)<=-.15;
+ if(skyFloor)add(25,'最高板天地板风险','high');
+ if(hasNumber(d.seal_rate)&&Number(d.seal_rate)<.70)add(5,'封板率低于70%','other');
+ if(numberOr(d.limit_down_count,0)>=15)add(5,'跌停扩散','other');
+ const failureN=numberOr(d.relay_failure_n,0),sampleFactor=failureN<5?.60:failureN<8?.80:1;
+ let cap=100;if(skyFloor)cap=25;if(failureN>=6&&failureN>=3&&numberOr(d.relay_failure_severe,0)>=.5&&numberOr(d.relay_failure_median,0)<=-.07)cap=Math.min(cap,30);
+ if(hasNumber(d.tier_feedback?.['2']?.total_median)&&Number(d.tier_feedback['2'].total_median)<0&&hasNumber(d.tier_feedback?.['3']?.total_median)&&Number(d.tier_feedback['3'].total_median)<0)cap=Math.min(cap,35);
+ return {penalty:(failurePoints*sampleFactor)+highPoints+otherPoints,penalties,cap,skyFloor,sampleFactor}
+}
+function temperatureAt(rows,index){
+  const d=rows[index];if(!hasRelayDetail(d))return legacyTemperatureAt(rows,index);
+  const components={market:breadthBaseScore(rows,index),profit:profitBaseScore(d),seal:sealBaseScore(rows,index),continuation:continuationBaseScore(rows,index)};
+  const rawValue=clamp(components.market*.35+components.profit*.25+components.seal*.20+components.continuation*.20),tail=tailRiskAt(d);
+  const gate=riskGateAt(rows,index),cap=Math.min(gate.cap,tail.cap),value=Math.min(clamp(rawValue-tail.penalty),cap);
+  gate.cap=cap;gate.penalty=tail.penalty;gate.penalties=tail.penalties;gate.flags=[...new Set([...gate.flags,...tail.penalties.map(x=>x.label)])];gate.level=Math.max(gate.level,tail.skyFloor?3:tail.penalty>=20?2:tail.penalty>0?1:0);
+  return {value:Math.round(value),rawValue:Math.round(rawValue),riskAdjusted:Math.round(clamp(rawValue-tail.penalty)),components,gate,version:'relay-v2'};
+}
+// 展示温度采用低温敏感的幂函数校准：0/100锚点不动，原30度映射为20度。
+// 映射严格单调，因此不改变每日温度的方向、排序和拐点；周期模型仍使用 value 原值。
+const TEMPERATURE_DISPLAY_GAMMA=Math.log(.2)/Math.log(.3);
+const displayTemperature=v=>Math.round(100*Math.pow(clamp(numberOr(v,0))/100,TEMPERATURE_DISPLAY_GAMMA));
+function temperatureSeries(rows){const values=rows.map((d,i)=>temperatureAt(rows,i));return values.map((item,i)=>{const modelValue=item.value,value=displayTemperature(modelValue),previousValue=i?displayTemperature(values[i-1].value):value;return {...item,modelValue,value,delta:i?value-previousValue:0,modelDelta:i?modelValue-values[i-1].value:0,sampleSize:Math.min(i+1,250)}})}
+function rollingPercentile(rows,index,getter,value){const values=rows.slice(Math.max(0,index-249),index+1).map(getter).filter(hasNumber).map(Number).sort((a,b)=>a-b);if(!values.length||!hasNumber(value))return 0;return values.filter(v=>v<=Number(value)).length/values.length*100}
+function legacyRiskGateAt(rows,index){
+  const d=rows[index],prev=rows[index-1]||{},flags=[];
+  const add=(condition,label)=>{if(condition)flags.push(label)};
+  add(hasNumber(d.limit_down_count)&&Number(d.limit_down_count)>=15&&rollingPercentile(rows,index,x=>x.limit_down_count,d.limit_down_count)>=85,'跌停扩散');
+  add(hasNumber(d.big_loss_count)&&Number(d.big_loss_count)>=8&&rollingPercentile(rows,index,x=>x.big_loss_count,d.big_loss_count)>=80,'大面集中');
+  add(hasNumber(d.failed_board_avg)&&Number(d.failed_board_avg)<=-.04,'断板负反馈');
+  add(hasNumber(d.yesterday_limit_avg)&&hasNumber(d.board_premium)&&Number(d.yesterday_limit_avg)<=-.015&&Number(d.board_premium)<=-.02,'涨停与连板双负溢价');
+  add(hasNumber(d.bomb_rate)&&Number(d.bomb_rate)>=.40&&hasNumber(prev.limit_up_count)&&Number(d.limit_up_count)<=Number(prev.limit_up_count)*.80,'炸板升高且涨停缩减');
+  add(hasNumber(d.median_return)&&Number(d.median_return)<=-.014&&hasNumber(d.up_count)&&hasNumber(d.down_count)&&Number(d.down_count)-Number(d.up_count)>=2500,'全市场下跌扩散');
+  const leaderFatal=index>0&&numberOr(prev.highest_board,0)>=4&&numberOr(d.highest_board,0)<=numberOr(prev.highest_board,0)-2&&hasNumber(d.failed_board_avg)&&Number(d.failed_board_avg)<=-.05;
+  const limitDownFatal=hasNumber(d.limit_down_count)&&Number(d.limit_down_count)>=40&&rollingPercentile(rows,index,x=>x.limit_down_count,d.limit_down_count)>=90;
+  if(leaderFatal)flags.unshift('高位龙头断层');
+  const level=leaderFatal||flags.length>=3?3:limitDownFatal||flags.length===2?2:flags.length===1?1:0;
+  return {level,cap:[100,70,45,25][level],flags,leaderFatal,limitDownFatal,version:'legacy-v1'};
+}
+function riskGateAt(rows,index){
+ const d=rows[index];if(!hasRelayDetail(d))return legacyRiskGateAt(rows,index);
+ const prev=rows[index-1]||{},total=numberOr(d.up_count,0)+numberOr(d.down_count,0)+numberOr(d.flat_count,0);
+ const down7Share=total&&hasNumber(d.down7_count)?Number(d.down7_count)/total:null,prevTotal=numberOr(prev.up_count,0)+numberOr(prev.down_count,0)+numberOr(prev.flat_count,0),prevDown7=prevTotal&&hasNumber(prev.down7_count)?Number(prev.down7_count)/prevTotal:null;
+ const broadCollapse=hasNumber(d.median_return)&&Number(d.median_return)<=-.014&&numberOr(d.down_count,0)-numberOr(d.up_count,0)>=2500;
+ const limitExpansion=numberOr(d.limit_down_count,0)>=15&&rollingPercentile(rows,index,x=>x.limit_down_count,d.limit_down_count)>=85&&numberOr(d.limit_down_count,0)>numberOr(prev.limit_down_count,0);
+ const largeLossExpansion=hasNumber(down7Share)&&rollingPercentile(rows,index,x=>{const n=numberOr(x.up_count,0)+numberOr(x.down_count,0)+numberOr(x.flat_count,0);return n&&hasNumber(x.down7_count)?Number(x.down7_count)/n:null},down7Share)>=85&&(!hasNumber(prevDown7)||down7Share>prevDown7);
+ const marketRed=broadCollapse||limitExpansion||largeLossExpansion;
+ const relayRed=Number(d.relay_intraday_median)<=-.03&&Number(d.relay_intraday_nonnegative)<=.35;
+ const failureRed=numberOr(d.relay_failure_n,0)>=4&&(Number(d.relay_failure_median)<=-.05||(Number(d.relay_failure_median)<=-.03&&Number(d.relay_failure_severe)>=.40));
+ const tiers=d.tier_feedback||{},highRed=numberOr(d.high_follow_n,0)>=2&&Number(d.high_follow_median)<=-.06&&Number(tiers['3']?.total_median)<0&&Number(tiers['2']?.total_median)<0;
+ const modules={market:marketRed,relay:relayRed,failure:failureRed,high:highRed},flags=[];
+ if(marketRed)flags.push('市场压力扩散');if(relayRed)flags.push('连板承接恶化');if(failureRed)flags.push('失败代价过高');if(highRed)flags.push('高位风险下传');
+ const redCount=Object.values(modules).filter(Boolean).length;
+ const level=(failureRed&&(marketRed||relayRed))||redCount>=3?3:redCount===2?2:redCount===1?1:0;
+ return {level,cap:[100,70,45,25][level],flags,modules,version:'relay-v2'};
+}
+function temperatureMomentum(temps,index){const diff=n=>index-n>=0?temps[index-n+1].value-temps[index-n].value:0;return diff(1)*.5+diff(2)*.3+diff(3)*.2}
+function cycleTemperatureAt(rows,index){
+ const d=rows[index];if(!hasRelayDetail(d))return legacyTemperatureAt(rows,index);
+ const components={market:marketPressureScore(rows,index),relay:relayTradabilityScore(rows,index),failure:failureCostScore(d),high:highStructureScore(rows,index)};
+ const rawValue=clamp(components.market*.25+components.relay*.30+components.failure*.30+components.high*.15),gate=riskGateAt(rows,index),value=Math.min(rawValue,gate.cap);
+ return {value:Math.round(value),rawValue:Math.round(rawValue),components,gate,version:'relay-v2'}
+}
+function sectorMainlineEvidence(rows,index){
+  const d=rows[index],items=Array.isArray(d.top_sectors)?d.top_sectors:Array.isArray(d.sectors)?d.sectors:[];
+  if(!items.length)return {available:false,qualified:false,reason:'缺少每日板块跟踪数据'};
+  const normalized=items.map(x=>({name:x.name||x.sector||x.theme||'',height:numberOr(x.highest_board??x.height,0),tiers:Array.isArray(x.tiers)?x.tiers:(typeof x.tiers==='string'?x.tiers.split('-').map(Number).filter(Number.isFinite):[]),median:numberOr(x.median_return??x.median,NaN),strongDays:numberOr(x.strong_days??x.consecutive_strong_days,0),leader:numberOr(x.leader_strength??x.leader_return,NaN)}));
+  const qualified=normalized.filter(x=>x.name&&x.strongDays>=3&&Number.isFinite(x.median)&&x.median>=0&&Number.isFinite(x.leader)&&x.leader>=0&&x.height>=3&&x.tiers.filter((v,i,a)=>a.indexOf(v)===i).length>=3);
+  const best=qualified.sort((a,b)=>b.strongDays-a.strongDays||b.height-a.height||b.median-a.median)[0];
+  return {available:true,qualified:!!best,best:best||null,reason:best?`${best.name}持续${best.strongDays}日，梯队${best.tiers.join('-')}，中位收益${(best.median*100).toFixed(1)}%`:'尚无持续3日且具备有效梯队的主线'};
+}
+function sectorMainlineConfirmed(rows,index,minDays=3){
+  if(index<minDays-1)return false;
+  const current=sectorMainlineEvidence(rows,index);if(!current.qualified)return false;
+  for(let i=index-minDays+1;i<=index;i++){const e=sectorMainlineEvidence(rows,i);if(!e.qualified||e.best.name!==current.best.name)return false}
+  return true;
+}
+function cycleSeries(rows,temps=temperatureSeries(rows)){
+  // V2 shares the card score before display conversion; V1 retains its historical rules.
+  const cycleTemps=rows.map((d,i)=>hasRelayDetail(d)?{...temps[i],value:temps[i].modelValue}:cycleTemperatureAt(rows,i));
+  const modelTemps=cycleTemps.map((t,i)=>({...t,delta:i?t.value-cycleTemps[i-1].value:0}));
+  let regime='混沌',sinceIndex=0,reason='等待周期确认',candidate=null,recoveryWatch=-2;
+  return rows.map((d,index)=>{
+    const t=modelTemps[index],prev=modelTemps[index-1],m=temperatureMomentum(modelTemps,index),gate=t.gate;
+    const breadth=hasNumber(d.up_count)&&hasNumber(d.down_count)&&Number(d.up_count)+Number(d.down_count)>0?Number(d.up_count)/(Number(d.up_count)+Number(d.down_count)):0;
+    const detailed=hasRelayDetail(d),relayHealthy=!detailed||(Number(d.relay_intraday_median)>=0&&Number(d.relay_intraday_nonnegative)>=.55),failureHealthy=!detailed||numberOr(d.relay_failure_n,0)<4||(Number(d.relay_failure_median)>-.03&&Number(d.relay_failure_severe)<.25);
+    const recoveryConfirmedReason=detailed?'整体情绪连续改善，连板承接确认；断板风险单独评估':'旧口径市场压力连续两日改善';
+    const recoveryWaitingReason=detailed?'前期退潮尚未确认修复，等待整体改善；不代表今日继续恶化':'旧口径等待市场广度、大跌与跌停压力继续改善';
+    const mainRiseConfirmedReason=detailed?'启动后两日内获得温度、封板与接力确认':'旧口径启动后两日内获得温度、封板与高度结构确认';
+    const priorRow=rows[index-1]||{},marketImproving=index>0&&hasNumber(d.median_return)&&hasNumber(priorRow.median_return)&&hasNumber(d.down7_count)&&hasNumber(priorRow.down7_count)&&hasNumber(d.limit_down_count)&&hasNumber(priorRow.limit_down_count)&&Number(d.median_return)>Number(priorRow.median_return)&&Number(d.down7_count)<=Number(priorRow.down7_count)&&Number(d.limit_down_count)<=Number(priorRow.limit_down_count);
+    const improvementVotes=[hasNumber(d.median_return)&&hasNumber(priorRow.median_return)&&Number(d.median_return)>Number(priorRow.median_return),hasNumber(d.down7_count)&&hasNumber(priorRow.down7_count)&&Number(d.down7_count)<=Number(priorRow.down7_count),hasNumber(d.limit_down_count)&&hasNumber(priorRow.limit_down_count)&&Number(d.limit_down_count)<=Number(priorRow.limit_down_count)].filter(Boolean).length;
+    const recoverySignal=detailed?t.value>=40&&gate.level<=1&&improvementVotes>=2&&!!prev&&t.value>prev.value&&breadth>=.5&&!gate.modules?.relay:t.value>=40&&gate.level<=1&&marketImproving&&relayHealthy&&failureHealthy;
+    const temperatureHold=index>=2&&modelTemps.slice(index-2,index+1).every(x=>x.value>=25);
+    // A rebound from退潮/冰点 is recovery evidence first, never a direct主升候选.
+    const chaosEligible=regime==='混沌';
+    const sectorEvidence=sectorMainlineEvidence(rows,index);
+    const mainlineConfirmed=sectorMainlineConfirmed(rows,index,3);
+    const mainRiseSignal=chaosEligible&&temperatureHold&&mainlineConfirmed&&breadth>=.55&&numberOr(d.seal_rate,0)>=.70&&numberOr(d.limit_up_count,0)>=50&&numberOr(d.board_2plus_count,0)>=8&&numberOr(d.highest_board,0)>=3&&gate.level<2&&relayHealthy&&failureHealthy&&(!detailed||!gate.modules?.market);
+    const temperatureDrop=prev?t.value-prev.value:0;
+    const heightDrop=index?numberOr(rows[index-1].highest_board,0)-numberOr(d.highest_board,0):0;
+    const previousBoards=index?numberOr(rows[index-1].board_2plus_count,0):0;
+    const boardDrop=previousBoards?(previousBoards-numberOr(d.board_2plus_count,0))/previousBoards:0;
+    const limitDownRisk=gate.flags.includes('跌停扩散');
+    const damage=(temperatureDrop<=-30?2:0)+(breadth<.35?1:0)+(limitDownRisk?1:0)+(heightDrop>=2?1:0)+(boardDrop>=.35?1:0)+(gate.level===1?1:0)+(gate.modules?.relay?1:0)+(gate.modules?.failure?1:0);
+    const temperatureCollapse=!!prev&&prev.value>=65&&t.value<=30&&t.value-prev.value<=-35;
+    const warningStreak=!!prev&&prev.gate.level>=1&&gate.level>=1&&(!detailed||(!!gate.modules?.market&&!!gate.modules?.relay));
+    const lowFour=modelTemps.slice(Math.max(0,index-3),index+1).filter(x=>x.value<45).length;
+    const persistentWeak=t.value<35&&lowFour>=3;
+    const multiDamage=!detailed||[gate.modules?.market,gate.modules?.relay,gate.modules?.failure,gate.modules?.high,breadth<.35,heightDrop>=2||boardDrop>=.35,temperatureCollapse||persistentWeak].filter(Boolean).length>=2;
+    const mainRiseExit=multiDamage&&(gate.level>=2||damage>=4||temperatureCollapse||warningStreak||persistentWeak);
+    const priorLow=modelTemps.slice(Math.max(0,index-5),index).filter(x=>x.value<35).length;
+    const extremeNegative=detailed
+      ? (numberOr(d.limit_down_count,0)>=20||numberOr(d.relay_failure_severe,0)>=.35||numberOr(d.relay_failure_median,0)<=-.07)
+      : (numberOr(d.limit_down_count,0)>=20||breadth<.28||numberOr(d.highest_board,0)<=2);
+    const iceSignal=(regime==='退潮'||regime==='高位分歧')&&t.value<=25&&gate.level>=1&&priorLow>=3&&extremeNegative;
+    let next=regime,nextReason=reason;
+    let watchingRecovery=false;
+    if(regime==='主升'&&mainRiseExit){next=gate.level>=2||damage>=4||temperatureCollapse?'退潮':'高位分歧';candidate=null;recoveryWatch=-2;nextReason=gate.level>=2?`风险阀门L${gate.level}：${gate.flags.join('、')}`:damage>=4?`单日结构损伤${damage}分`:temperatureCollapse?'主升高位温度断崖':warningStreak?'连续风险预警':'主升高位承接转弱'}
+    else if(regime==='高位分歧'&&(mainRiseExit||m<=-4)){next='退潮';candidate=null;recoveryWatch=-2;nextReason='高位分歧持续恶化，进入退潮'}
+    else if(regime!=='主升'&&iceSignal){next='冰点';candidate=null;nextReason='连续退潮后的恐慌衰竭'}
+    else if(regime!=='主升'&&candidate){
+      const followThrough=t.value>=55&&numberOr(d.seal_rate,0)>=.70&&(detailed?gate.level<=1:gate.level===0)&&damage<=1&&heightDrop<2&&boardDrop<.35&&relayHealthy&&(!detailed||!gate.modules?.market);
+      if(gate.level>=2||damage>=4){candidate=null;next=t.value<45||m<=-4?'退潮':next;nextReason=`主升启动失败，单日结构损伤${damage}分`}
+      else if(followThrough){next='主升';sinceIndex=candidate.start;candidate=null;nextReason=mainRiseConfirmedReason}
+      else if(index-candidate.start>=2){candidate=null;nextReason='主升启动未获得后续确认'}
+      else nextReason=`主升启动观察第${index-candidate.start+1}日，等待${detailed?'温度、封板与接力':'温度、封板与高度结构'}确认`;
+    }
+    else if(regime==='混沌'&&mainRiseSignal){candidate={start:index,base:regime};nextReason=`主线${sectorEvidence.best.name}连续强化，温度、广度、封板和连板结构同步转强`}
+    else if((regime==='冰点'||regime==='退潮')&&recoverySignal){if(recoveryWatch===index-1&&relayHealthy){next='混沌';recoveryWatch=-2;nextReason='冰点后连续改善，进入混沌观察；修复不等于主升'}else{recoveryWatch=index;watchingRecovery=true;nextReason='首日改善，只观察，不恢复参与'}}
+    else if(regime==='冰点'||regime==='退潮'||regime==='高位分歧'){recoveryWatch=-2;nextReason=gate.level>=2?`风险阀门L${gate.level}：${gate.flags.join('、')}`:recoveryWaitingReason}
+    else if(regime==='混沌'&&t.value<35&&m<=-4){next='退潮';nextReason='低温继续恶化'}
+    else if(regime==='混沌'&&t.value<35&&m<=-4){next='退潮';nextReason='低温继续恶化'}
+    if(next!==regime){const transitionStart=next==='主升'?sinceIndex:index;regime=next;sinceIndex=transitionStart;reason=nextReason}else if(nextReason!==reason)reason=nextReason;
+    const duration=index-sinceIndex+1,since=rows[sinceIndex].date;
+    const finish=state=>({...state,risk:gate.flags.join('、')||'未触发风险提示',participation:gate.level>=2||state.phase==='退潮'||state.phase==='冰点'||state.phase==='高位分歧'?'空仓':state.display==='修复观察'?'观察修复':state.regime==='主升期'?(state.daily==='高潮'?'正常参与':'控制仓位'):'观察'});
+    if(watchingRecovery&&regime!=='主升')return finish({regime:'混沌期',daily:'修复',phase:'混沌',display:'混沌 · 修复观察',action:'继续观察，修复不等于主升',momentum:m,duration:1,since:d.date,reason:nextReason,damage});
+    if(candidate&&regime!=='主升')return finish({regime:'主升启动',daily:'启动',phase:'修复',display:'主升启动',action:detailed?'等待接力反馈与修复延续确认':'等待封板与高度结构延续确认',momentum:m,duration:index-candidate.start+1,since:rows[candidate.start].date,reason:nextReason,damage});
+    if(regime==='主升'){
+      const daily=t.value>=65&&m>=0&&gate.level===0?'高潮':'分歧';
+      return finish({regime:'主升期',daily,phase:daily,display:`主升 · ${daily}`,action:daily==='高潮'?'持有核心，减少追高开仓':detailed?'观察接力承接与失败代价':'观察封板率与高度结构',momentum:m,duration,since,reason,damage});
+    }
+    if(regime==='高位分歧')return finish({regime:'高位分歧',daily:'分歧',phase:'高位分歧',display:'高位分歧',action:'降低接力，观察核心承接与负反馈',momentum:m,duration,since,reason,damage});
+    if(regime==='退潮')return finish({regime:'退潮期',daily:'恶化',phase:'退潮',display:'退潮',action:'风险优先，建议空仓',momentum:m,duration,since,reason,damage});
+    if(regime==='冰点')return finish({regime:'退潮冰点',daily:'衰竭',phase:'冰点',display:'退潮冰点',action:'观察混沌确认，不做左侧抢跑',momentum:m,duration,since,reason,damage});
+    return finish({regime:'混沌期',daily:'观察',phase:'混沌',display:'混沌 · 观察',action:'方向不明，等待连续性确认',momentum:m,duration,since,reason,damage});
+  })
+}
+function cycleAt(rows,index,temps=temperatureSeries(rows)){return cycleSeries(rows,temps)[index]}
+function temperatureLabel(v,delta){
+  if(v<=20)return delta>0?'冰点修复':'冰点';
+  if(v<=40)return delta>=0?'弱修复':'退潮';
+  if(v<=60)return delta>=0?'修复':'分歧';
+  if(v<=80)return delta>=0?'升温':'高位分歧';
+  return delta>=0?'高潮':'高潮回落';
+}
+function temperatureBreakdown(t){const gate=t.gate.level?`${t.gate.flags.join('、')}（${t.gate.flags.length}项）`:'未触发';return `页面温度 ${t.value}°；风险提示：${gate}；基础得分 ${t.rawValue}/100，风险扣分 ${t.gate.penalty||0}，限温后 ${t.modelValue}/100`}
+function temperatureRiskEvidence(rows,index){const d=rows[index],prev=rows[index-1]||{},g=riskGateAt(rows,index);const percent=v=>hasNumber(v)?`${(Number(v)*100).toFixed(2)}%`:'缺数据';const evidence={
+ '全市场下跌扩散':`涨跌幅中位数 ${percent(d.median_return)}；下跌比上涨多 ${fmt(Number(d.down_count)-Number(d.up_count))} 家。触发线为中位数≤−1.4%，且下跌多出至少2500家。`,
+  '跌停扩散':`跌停 ${fmt(d.limit_down_count)} 家，达到15家且处于近250日较高位置（≥85分位）。`,
+  '大面集中':`昨日涨停股中跌幅≥7%的有 ${fmt(d.big_loss_count)} 家，达到8家且处于近250日≥80分位。`,
+ '断板负反馈':`昨日涨停、今日未续板样本的平均表现为 ${percent(d.failed_board_avg)}，触发线为≤−4%。`,
+ '涨停与连板双负溢价':`昨日涨停股平均 ${percent(d.yesterday_limit_avg)}、昨日连板股平均 ${percent(d.board_premium)}；分别达到≤−1.5%与≤−2%。`,
+ '炸板升高且涨停缩减':`炸板率 ${percent(d.bomb_rate)}；涨停由 ${fmt(prev.limit_up_count)} 家降至 ${fmt(d.limit_up_count)} 家。触发线为炸板率≥40%，且涨停家数减少至少20%。`,
+ '高位龙头断层':`最高连板由 ${fmt(prev.highest_board)} 板降至 ${fmt(d.highest_board)} 板，断板样本平均 ${percent(d.failed_board_avg)}。昨日高度≥4板、今日下降至少2板且断板平均≤−5%，直接触发L3。`,
+ '市场压力扩散':`涨跌幅中位数 ${percent(d.median_return)}；下跌比上涨多 ${fmt(Number(d.down_count)-Number(d.up_count))} 家；跌幅≥7% ${fmt(d.down7_count)} 家；跌停 ${fmt(d.limit_down_count)} 家。`,
+ '连板承接恶化':`昨日连板今开→今收中位数 ${percent(d.relay_intraday_median)}，日内上涨占比 ${percent(d.relay_intraday_positive)}，日内非负占比 ${percent(d.relay_intraday_nonnegative)}。红灯线为日内中位数≤−3%，且非负占比≤35%。`,
+ '失败代价过高':`${fmt(d.relay_failure_n)}只断板连板股昨收→今收中位数 ${percent(d.relay_failure_median)}，今开→今收中位数 ${percent(d.relay_failure_intraday_median)}，跌幅≥7%占比 ${percent(d.relay_failure_severe)}。`,
+ '高位风险下传':`高位断板后续中位数 ${percent(d.high_follow_median)}；二板反馈 ${percent(d.tier_feedback?.['2']?.total_median)}，三板反馈 ${percent(d.tier_feedback?.['3']?.total_median)}。`
+};return g.flags.map(flag=>({flag,text:evidence[flag]||flag}))}
+function updateTemperatureExplanation(rows){
+ const latest=temperatureSeries(rows).at(-1),g=latest.gate,c=latest.components,reasons=temperatureRiskEvidence(rows,rows.length-1),wasOpen=dom.temperatureBreakdown.querySelector('details')?.open===true;
+ const capped=latest.modelValue<latest.rawValue;
+ dom.temperatureCard.title=`${temperatureBreakdown(latest)}。${reasons.map(x=>x.text).join(' ')}`;
+ const v2=latest.version==='relay-v2',pieces=v2?[['市场广度',c.market,35],['赚钱效应',c.profit,25],['封板质量',c.seal,20],['接力延续',c.continuation,20]]:[['市场广度',c.breadth,10],['涨停表现',c.limits,15],['连板接力',c.leader,25],['赚钱效应',c.profit,20],['亏损环境',c.risk,30]];
+ const sample=rows.slice(-250),counts=(v2?[['市场中位数','median_return'],['连板日内中位数','relay_intraday_median'],['连板断板中位数','relay_failure_median'],['高位后续反馈','high_follow_median']]:[['涨跌幅中位数','median_return'],['跌停数量','limit_down_count'],['昨涨停收益','yesterday_limit_avg'],['昨连板收益','board_premium'],['昨涨停未封板收益','failed_board_avg']]).map(([label,key])=>({label,n:sample.filter(r=>hasNumber(r[key])).length})),shortSample=counts.some(x=>x.n<60);
+ dom.temperatureBreakdown.innerHTML=`<div class="temp-explain-head"><strong>当前温度 ${latest.value}°</strong><span class="${g.level?'temp-risk-on':'temp-risk-off'}">${g.level?`风险提示 ${g.flags.length}项 · L${g.level}`:'未触发风险限温'}</span></div>
+ ${reasons.length?`<ul class="temp-reasons">${reasons.map(x=>`<li><b>${esc(x.flag)}</b><span>${esc(x.text)}</span></li>`).join('')}</ul>`:'<p>当前未触发这些风险规则，不代表没有交易风险。</p>'}
+ <p class="temp-impact">${v2?`基础温度 ${latest.rawValue} 分，尾部风险扣 ${g.penalty||0} 分${g.cap<100?`，并受 ${g.cap} 分上限约束`:''}，最终模型分 ${latest.modelValue}。`:capped?`风险规则将模型得分从 ${latest.rawValue} 分限制至 ${latest.modelValue} 分。`:`本次风险规则没有额外压低得分${g.level?`：综合 ${latest.rawValue} 分，低于L${g.level}的 ${g.cap} 分上限`:'，使用综合得分'}。`}</p>
+ ${shortSample?'<p class="temp-impact">逐股连板反馈不足60个有效交易日，暂按绝对阈值评分；历史分位只用于覆盖充分的市场指标。</p>':''}
+ <details class="temp-calculation" ${wasOpen?'open':''}><summary>查看温度计算与风险等级</summary><div class="temp-score-grid">${pieces.map(([label,value,weight])=>`<div><span>${label}</span><strong>${Math.round(value)}<small>/100</small></strong><small>权重 ${weight}%</small></div>`).join('')}</div>
+ <p>${v2?'市场广度、赚钱效应、封板质量和接力延续只决定基础温度；断板大面、最高板重挫、天地板、低封板率和跌停扩散只能扣分，并可直接限制温度上限。小样本利好向中性收缩，极端利空不做对称收缩。':'旧历史区间缺少完整逐股样本，沿用原有历史相对评分。'}分数反映情绪强弱，不直接代表可交易性或收益概率。</p>
+ <p class="temp-formula">${v2?'风险优先温度V2.1':'历史温度V1'} · 基础 ${latest.rawValue}分 → 风险扣分 ${g.penalty||0}分 → 上限 ${g.cap}分 → 模型 ${latest.modelValue}分 → 页面 ${latest.value}°</p><p>${latest.modelValue}分换成${latest.value}°是低温敏感的显示刻度，不是再次扣分。V2周期使用同一模型分判断连续性；单独断板亏损不否决回暖，修复确认仍需连续改善和接力承接。V1历史规则保持不变。市场分位最多取250日；下方压力卡使用所选日前250日，因此观察窗略有区别。</p><div class="temp-sample-counts">${counts.map(x=>`<span>${x.label}：有效 ${x.n}日</span>`).join('')}</div><p>指标缺失不会填成0。逐股模型从有完整固定名单的日期开始生效，旧区间保留V1并在温度点位中标明版本。</p>
+ <div class="temp-levels"><span>L0 · 无红灯 · 上限100</span><span>L1 · 1个模块红灯 · 上限70</span><span>L2 · 2个模块红灯 · 上限45</span><span>L3 · 失败代价与其他风险共振或≥3个红灯 · 上限25</span></div><p>风险等级用于控制打板参与条件，不是收益概率。阈值仍需随实盘样本积累继续验证。</p></details>`;
+}
+
+function phaseOf(d){
+  const diff=d.up_count-d.down_count, ld=d.limit_up_count-d.limit_down_count;
+  if(d.limit_down_count>=15||(diff<=-3000&&ld<0)) return '退潮';
+  if(diff<=-1500&&d.limit_up_count<=50&&d.limit_down_count<15) return '冰点';
+  if(diff>=2500&&d.limit_up_count>=80&&d.limit_down_count<=5) return '高潮';
+  if(diff<0||ld<30) return '分歧'; return '修复';
+}
+function heatStyle(v,max){const p=Math.min(Math.abs(v)/Math.max(max,1),1);return v>=0?`background:rgba(255,91,97,${.08+p*.48});color:${p>.6?'#fff':'#ff9a9e'}`:`background:rgba(46,207,143,${.08+p*.45});color:${p>.6?'#fff':'#74e5bb'}`}
+function setClass(el,v){el.classList.remove('positive','negative');el.classList.add(v>=0?'positive':'negative')}
+
+function renderKpis(rows){const d=rows.at(-1),diffVal=d.up_count-d.down_count,ld=d.limit_up_count-d.limit_down_count,b=d.up_count/(d.up_count+d.down_count),temps=temperatureSeries(rows),temp=temps.at(-1),state=manualCycleStates(rows).at(-1);dom.tradeDate.textContent=d.date;dom.updateTime.textContent=`最后刷新 ${payload.updated_at||d.date}`;dom.phase.textContent=state.display;dom.phase.className=state.phase==='高潮'?'positive':state.phase==='退潮'||state.phase==='冰点'?'negative':'';dom.phaseHint.textContent=state.display==='主升启动'?'启动观察，尚未确认':state.display==='修复观察'?'首日改善，等待确认':state.phase==='退潮'?'周期偏弱，留意当日变化':'周期判断与接力风险分开评估';dom.phaseCard.title=`${state.regime} · 参与状态${state.participation} · 已持续${state.duration}日 · 起点${state.since} · ${state.reason}`;dom.temperature.textContent=`${temp.value}°`;setClass(dom.temperature,temp.value-50);const direction=temp.delta>0?`升温 +${temp.delta}`:temp.delta<0?`降温 ${temp.delta}`:'温度持平',gate=temp.gate.level?(temp.gate.flags.length===1?temp.gate.flags[0]:`${temp.gate.flags.length}项风险提示`):'';dom.temperatureSub.innerHTML=`<span class="temp-direction">较上一交易日 ${direction}</span>${gate?`<span class="temp-warning">${esc(gate)}</span>`:''}`;setClass(dom.temperatureSub,temp.delta);dom.breadth.textContent=pct(b);dom.breadthSub.textContent=`${fmt(d.up_count)} 涨 / ${fmt(d.down_count)} 跌`;dom.height.textContent=d.highest_board;dom.diff.textContent=(diffVal>0?'+':'')+fmt(diffVal);setClass(dom.diff,diffVal);dom.diffSub.textContent=diffVal>=0?'上涨家数占优':'下跌家数占优';dom.limits.textContent=`${d.limit_up_count} / ${d.limit_down_count}`;dom.limitDiff.textContent=`净涨停 ${ld>0?'+':''}${ld}`;setClass(dom.limitDiff,ld);dom.turnover.textContent=fmt(d.turnover_yi)}
+
+function renderDiagnostics(rows){const d=rows.at(-1),signed=v=>v==null?'—':`${v>0?'+':''}${pct(v)}`;dom.medianReturn.textContent=signed(d.median_return);setClass(dom.medianReturn,d.median_return||0);dom.moveCounts.textContent=`涨超5% ${fmt(d.up5_count)} · 跌超5% ${fmt(d.down5_count)}`;dom.promotionLadder.textContent=[d.promotion_1to2,d.promotion_2to3,d.promotion_3plus].map(pct).join(' / ');dom.sealRate.textContent=pct(d.seal_rate);dom.sealQuality.textContent=`首板 ${fmt(d.first_board_count)} · 炸板 ${fmt(Math.round(d.limit_up_count*(1/(d.seal_rate||1)-1)))}`;dom.yesterdayFeedback.textContent=`${signed(d.first_board_premium)} / ${signed(d.board_premium)} / ${signed(d.failed_board_avg)}`;dom.feedbackDetail.textContent='首板 / 连板 / 断板'}
+
+function renderRelayMatrix(allRows){
+ if(!dom.relayMatrixBody)return;
+ const count=Number(dom.relayPeriod.value||15),start=Math.max(0,allRows.length-count),rows=allRows.slice(start),allTemps=temperatureSeries(allRows),temps=allTemps.slice(start),states=manualCycleStates(allRows).slice(start),latest=rows.at(-1);
+ const sample=(d,key)=>d.feedback_samples?.[key]?.valid;
+ const relayN=d=>d.tier_feedback?Object.values(d.tier_feedback).reduce((s,x)=>s+numberOr(x.n,0),0):null;
+ const tile=(label,value,n,risk=false)=>`<div class="relay-snapshot-item ${hasNumber(value)?(risk?(Number(value)>.25?'risk':'calm'):(Number(value)>=.5?'strong':'weak')):''}"><span>${label}</span><strong>${pct(value)}</strong><small>${hasNumber(n)?`有效 ${fmt(n)}只`:'样本待积累'}</small></div>`;
+ dom.relaySnapshot.innerHTML=tile('首板红盘率',latest.first_board_positive,sample(latest,'first_board_premium'))+tile('首板大面率',latest.first_board_severe,sample(latest,'first_board_premium'),true)+tile('连板红盘率',latest.relay_total_positive,relayN(latest))+tile('断板大面率',latest.relay_failure_severe,latest.relay_failure_n,true);
+ dom.relayMatrixHead.innerHTML=`<tr><th>指标</th>${rows.map(d=>`<th>${esc(d.date.slice(5).replace('-','/'))}</th>`).join('')}</tr>`;
+ const specs=[['首板红盘率','first_board_positive',false,d=>sample(d,'first_board_premium')],['首板大面率','first_board_severe',true,d=>sample(d,'first_board_premium')],['连板红盘率','relay_total_positive',false,relayN],['连板晋级率','promotion_rate',false,d=>d.feedback_samples?.yesterday_limit_avg?.valid],['断板大面率','relay_failure_severe',true,d=>d.relay_failure_n],['连板接力强度','__relay_strength',false,()=>null]];
+ const heatClass=rank=>rank>=85?'heat-strong-3':rank>=70?'heat-strong-2':rank>=55?'heat-strong-1':rank>=45?'heat-neutral':rank>=30?'heat-weak-1':rank>=15?'heat-weak-2':'heat-weak-3';
+ const comparableValue=(row,key)=>key==='promotion_rate'&&row.promotion_method!=='fixed_previous_pool'?null:row[key];
+ const rollingRank=(globalIndex,key,risk)=>{const sample=allRows.slice(Math.max(0,globalIndex-59),globalIndex+1).map(x=>comparableValue(x,key)).filter(hasNumber).map(Number),current=comparableValue(allRows[globalIndex],key);if(!hasNumber(current)||!sample.length)return {rank:null,n:sample.length};const value=Number(current),less=sample.filter(v=>v<value).length,equal=sample.filter(v=>v===value).length,raw=(less+equal*.5)/sample.length*100;return {rank:risk?100-raw:raw,n:sample.length}};
+ const relayStrengthRank=globalIndex=>{const get=key=>rollingRank(globalIndex,key,false),b=get('board_2plus_count'),l=get('limit_up_count'),p=get('promotion_rate'),s=get('seal_rate');if(!b.rank&&!l.rank&&!p.rank&&!s.rank)return {rank:null,n:0,detail:''};const quantity=(b.rank??50)*.55+(l.rank??50)*.45;const quality=(p.rank??50)*.60+(s.rank??50)*.40;let score=quantity*.60+quality*.40;const q=Math.min(b.rank??50,l.rank??50),r=Math.min(p.rank??50,s.rank??50);let adjustment=0;if(q>=60&&r>=60)adjustment=6;else if(q<=30&&r>=70)adjustment=-10;else if(q>=70&&r<=30)adjustment=-5;score=Math.max(0,Math.min(100,score+adjustment));return {rank:score,n:[b,l,p,s].filter(x=>x.rank!=null).length,detail:`数量基础${quantity.toFixed(0)} · 接力质量${quality.toFixed(0)} · 共振修正${adjustment>0?'+':''}${adjustment}`}};
+ const cells=specs.map(([label,key,risk,nget])=>`<tr><th>${label}</th>${rows.map((d,i)=>{const v=key==='__relay_strength'?(() => {const x=relayStrengthRank(start+i);return x.rank==null?null:x.rank/100})():d[key],n=nget(d);if(!hasNumber(v))return '<td class="relay-missing">—</td>';const history=key==='__relay_strength'?relayStrengthRank(start+i):rollingRank(start+i,key,risk),rank=key==='__relay_strength'?history.rank:(history.rank??50);return `<td class="relay-heat ${heatClass(rank)}" title="${esc(d.date)} · ${label} ${key==='__relay_strength'?rank.toFixed(1)+'分':pct(v)}${hasNumber(n)?` · 有效${fmt(n)}只`:''}${key==='__relay_strength'?` · ${history.detail}`:' · 自身滚动60日强弱百分位'}">${key==='__relay_strength'?rank.toFixed(1):pct(v)}<small>${key==='__relay_strength'?'数量/质量/共振':'P'+Math.round(rank)}</small></td>`}).join('')}</tr>`).join('');
+ const tempRow=`<tr><th>情绪温度</th>${temps.map(t=>`<td style="${heatStyle(t.value-50,50)}" title="模型温度 ${t.value}°">${t.value}°</td>`).join('')}</tr>`;
+ const phaseRow=`<tr><th>周期阶段</th>${states.map(s=>`<td class="relay-phase phase-${s.phase}" title="${esc(s.reason)}">${esc(s.display)}</td>`).join('')}</tr>`;
+ dom.relayMatrixBody.innerHTML=cells+tempRow+phaseRow;const wrap=dom.relayMatrixBody.closest?.('.relay-matrix-wrap');if(wrap)requestAnimationFrame(()=>{wrap.scrollLeft=wrap.scrollWidth-wrap.clientWidth});
+}
+
+function renderCoreStocks(entries){
+ const ordered=[...entries].sort((a,b)=>a.date.localeCompare(b.date)||String(a.recorded_at).localeCompare(String(b.recorded_at))),current=new Map();
+ ordered.forEach(x=>{const key=x.instrument.trim().toUpperCase();if(x.action==='淘汰')current.delete(key);else current.set(key,x)});
+ const card=x=>`<article class="core-item"><div><strong>${esc(x.instrument)}</strong><span>${esc(x.role)}${x.theme?` · ${esc(x.theme)}`:''}</span></div><em class="core-action core-action-${esc(x.action)}">${esc(x.action)}</em><small>${esc(x.date)}</small><button type="button" class="core-delete" data-core-delete="${esc(x.id||'')}" data-core-instrument="${esc(x.instrument)}">删除</button></article>`;
+ const active=[...current.values()].sort((a,b)=>a.role.localeCompare(b.role,'zh-CN'));
+ dom.coreActivePool.innerHTML=active.length?active.map(card).join(''):'<p class="core-empty">尚未录入核心股</p>';
+ const recent=[...ordered].reverse().slice(0,12);dom.coreRecentEntries.innerHTML=recent.length?recent.map(card).join(''):'<p class="core-empty">暂无变更记录</p>';
+}
+const localCoreEntries=()=>{try{return JSON.parse(localStorage.getItem('a-share-core-stocks')||'[]')}catch{return []}};
+async function syncLocalCoreStocks(){const local=localCoreEntries();if(!local.length)return;for(const entry of local){const r=await fetch('/api/core-stocks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(entry)});if(!r.ok)throw Error('后台同步接口未生效')}localStorage.removeItem('a-share-core-stocks');dom.coreFormStatus.textContent=`已将浏览器中的 ${local.length} 条记录同步到后台`}
+async function deleteCoreStock(id,instrument){if(!id)return;if(!confirm('确定删除 '+(instrument||'这条记录')+'？'))return;try{const r=await fetch('/api/core-stocks?id='+encodeURIComponent(id),{method:'DELETE'});if(!r.ok)throw Error()}catch{const kept=localCoreEntries().filter(x=>x.id!==id);localStorage.setItem('a-share-core-stocks',JSON.stringify(kept))}await loadCoreStocks();setTimeout(loadCoreTracking,500)}
+async function loadCoreStocks(){let local=localCoreEntries();try{await syncLocalCoreStocks();local=[]}catch{}let entries=local;try{const r=await fetch(`data/core_stocks.json?t=${Date.now()}`,{cache:'no-store'});if(r.ok){const data=await r.json();entries=[...(data.entries||[]),...local]}}catch{}renderCoreStocks(entries)}
+const corePct=v=>v==null?'—':`${(Number(v)*100).toFixed(1)}%`;
+function renderCoreStrengthChart(data,period=10){const box=document.getElementById('coreStrengthChart'),summary=document.getElementById('coreStrengthSummary');if(!box)return;const rows=(data.snapshots||[]).filter(x=>hasNumber(x.overall?.strength)).slice(-period);if(rows.length<2){box.innerHTML='<p class="core-empty">至少积累2个交易日后显示强度变化曲线</p>';summary.textContent=rows.length?`当前 ${rows[0].overall.strength} · 已积累1日`:'暂无有效强度';return}const w=900,h=250,m={t:22,r:22,b:36,l:42},iw=w-m.l-m.r,ih=h-m.t-m.b,x=i=>m.l+i*iw/(rows.length-1),y=v=>m.t+(100-v)/100*ih,ticks=[0,25,50,75,100],pts=rows.map((r,i)=>`${x(i)},${y(r.overall.strength)}`).join(' '),every=Math.max(1,Math.ceil(rows.length/8));box.innerHTML=`<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${ticks.map(t=>`<line class="grid-line" x1="${m.l}" y1="${y(t)}" x2="${w-m.r}" y2="${y(t)}"/><text class="axis-label" x="${m.l-8}" y="${y(t)+4}" text-anchor="end">${t}</text>`).join('')}<polyline class="core-strength-line" points="${pts}"/>${rows.map((r,i)=>`<circle class="core-strength-point" cx="${x(i)}" cy="${y(r.overall.strength)}" r="4"><title>${r.date} · 强度${r.overall.strength} · ${r.conclusion}</title></circle>${i%every===0||i===rows.length-1?`<text class="axis-label" x="${x(i)}" y="${h-10}" text-anchor="middle">${r.date.slice(5).replace('-','/')}</text>`:''}`).join('')}</svg>`;const values=rows.map(r=>r.overall.strength),change=values.at(-1)-values[0];summary.textContent=`${rows.length}日 · 起点 ${values[0]} · 最新 ${values.at(-1)} · 变化 ${change>0?'+':''}${change.toFixed(1)} · 最高 ${Math.max(...values)} · 最低 ${Math.min(...values)}`}
+function renderCoreTracking(data){const x=data.latest;if(!x){dom.coreAnalysis.innerHTML='<p class="core-empty">录入核心股后生成独立强度</p>';return}const s=x.overall,stock=x.active.map(v=>`<article class="core-performance"><div><strong>${esc(v.name)} <small>${esc(v.code)}</small></strong><span>${esc(v.role)}${v.theme?` · ${esc(v.theme)}`:''}</span></div><b class="${(v.return??0)>=0?'positive':'negative'}">${corePct(v.return)}</b><em>${[v.limit_up?'涨停':'',v.bombed?'炸板':'',v.broken_board?'断板':'',v.big_loss?'大面':''].filter(Boolean).join(' · ')||'正常'}</em></article>`).join(''),watch=x.eliminated_watch.map(v=>`<article class="core-performance"><div><strong>${esc(v.name)} <small>${esc(v.code)}</small></strong><span>淘汰后第${v.follow_day}个交易日</span></div><b class="${(v.return??0)>=0?'positive':'negative'}">${corePct(v.return)}</b><em>${v.big_loss?'大面负反馈':'继续观察'}</em></article>`).join('');dom.coreAnalysis.innerHTML=`<div class="core-verdict"><div><span>核心股强度</span><strong>${s.strength??'—'}</strong><small>独立证据 · 不纳入市场温度</small></div><div><span>周期证据</span><strong>${esc(x.conclusion)}</strong><small>${x.final?'收盘确认':'盘中观察'} · 有效${s.valid}只</small></div><div><span>红盘率 / 中位收益</span><strong>${corePct(s.red_rate)} / ${corePct(s.median_return)}</strong><small>涨停${s.limit_up} · 炸板${s.bombed} · 断板${s.broken_board} · 大面${s.big_loss}</small></div></div><section class="core-strength-panel"><div class="core-strength-head"><div><span>CORE STRENGTH TREND</span><h3>核心股强度变化</h3></div><label>周期<select id="coreStrengthPeriod"><option value="10">近10日</option><option value="20">近20日</option><option value="30">近30日</option></select></label></div><div id="coreStrengthChart" class="core-strength-chart"></div><p id="coreStrengthSummary" class="core-strength-summary"></p></section><details class="core-details"><summary>当前核心逐股表现</summary><div class="core-performance-list">${stock||'<p class="core-empty">暂无有效核心股</p>'}</div></details>${watch?`<details class="core-details"><summary>淘汰后3日观察</summary><div class="core-performance-list">${watch}</div></details>`:''}${x.unresolved.length?`<p class="core-warning">未识别：${x.unresolved.map(v=>esc(v.instrument)).join('、')}。请改填6位代码或准确股票简称。</p>`:''}`;const selector=document.getElementById('coreStrengthPeriod');renderCoreStrengthChart(data,Number(selector.value));selector.onchange=()=>renderCoreStrengthChart(data,Number(selector.value))}
+async function loadCoreTracking(){try{const r=await fetch(`data/core_tracking.json?t=${Date.now()}`,{cache:'no-store'});if(!r.ok)throw Error();renderCoreTracking(await r.json())}catch{dom.coreAnalysis.innerHTML='<p class="core-empty">保存名单并完成一次数据更新后生成分析</p>'}}
+async function saveCoreStock(event){event.preventDefault();const button=dom.coreStockForm.querySelector('button'),body={date:payload?.rows?.at(-1)?.date||new Date().toISOString().slice(0,10),instrument:dom.coreInstrument.value.trim(),role:dom.coreRole.value,theme:dom.coreTheme.value.trim(),action:dom.coreAction.value,id:`entry-${Date.now()}`,recorded_at:new Date().toISOString()};button.disabled=true;dom.coreFormStatus.textContent='正在保存…';try{const r=await fetch('/api/core-stocks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok)throw Error('后台持久化接口未生效');dom.coreFormStatus.textContent=`已写入后台：${body.instrument} · ${body.action}`}catch{const entries=localCoreEntries();entries.push(body);localStorage.setItem('a-share-core-stocks',JSON.stringify(entries));dom.coreFormStatus.textContent='后台未启动，已临时保存在本机；下次启动自动同步'}finally{dom.coreInstrument.value='';dom.coreTheme.value='';await loadCoreStocks();setTimeout(loadCoreTracking,2500);button.disabled=false}}
+
+function renderTable(rows){const maxDiff=Math.max(...rows.map(d=>Math.abs(d.up_count-d.down_count))),maxLD=Math.max(...rows.map(d=>Math.abs(d.limit_up_count-d.limit_down_count))),temps=temperatureSeries(rows),states=manualCycleStates(rows);dom.reviewBody.innerHTML=rows.map((d,i)=>({d,temp:temps[i],state:states[i]})).slice(-120).reverse().map(({d,temp,state})=>{const diff=d.up_count-d.down_count,ld=d.limit_up_count-d.limit_down_count,arrow=temp.delta>0?'↑':temp.delta<0?'↓':'→',gate=temp.gate.level?` · 风险阀门L${temp.gate.level}`:'',model=temp.version==='relay-v2'?'接力温度V2':'历史温度V1';return `<tr><td>${d.date}</td><td class="diff-cell temperature-cell" style="${heatStyle(temp.value-50,50)}" title="${model} · 模型${temp.modelValue}° → 低温敏感${temp.value}°${gate}"><strong>${temp.value}</strong><small>${arrow}${Math.abs(temp.delta)}</small></td><td>${fmt(d.up_count)}</td><td>${fmt(d.down_count)}</td><td class="diff-cell" style="${heatStyle(diff,maxDiff)}">${diff>0?'+':''}${fmt(diff)}</td><td>${pct(d.up_count/(d.up_count+d.down_count))}</td><td>${fmt(d.limit_up_count)}</td><td>${fmt(d.limit_down_count)}</td><td class="diff-cell" style="${heatStyle(ld,maxLD)}">${ld>0?'+':''}${ld}</td><td>${pct(d.bomb_rate)}</td><td>${fmt(d.board_2plus_count)}</td><td title="${d.promotion_method==='aggregate_proxy'?'当日连板数÷昨日涨停数，非逐股晋级率':'按前日固定名单逐股计算'}">${pct(d.promotion_rate)}${d.promotion_method==='aggregate_proxy'?'<small>总量近似</small>':''}</td><td title="昨连板今开→今收中位数">${pct(d.relay_intraday_median)}</td><td title="断板连板股中跌幅≥7%的比例；有效${fmt(d.relay_failure_n)}只">${pct(d.relay_failure_severe)}</td><td title="断板连板股昨收→今收中位数；有效${fmt(d.relay_failure_n)}只">${pct(d.relay_failure_median)}</td><td><span class="phase phase-${state.phase}" title="${esc(`${state.regime} · 参与状态${state.participation} · 持续${state.duration}日 · ${state.reason} · ${state.action}`)}">${state.display}</span></td></tr>`}).join('')}
+
+function renderChart(allRows){const p=dom.period.value,rows=p==='all'?allRows:allRows.slice(-Number(p)),box=dom.chart.getBoundingClientRect(),w=Math.max(box.width,320),h=Math.max(box.height,260),m={t:34,r:22,b:38,l:42},iw=w-m.l-m.r,ih=h-m.t-m.b,max=Math.max(10,...rows.map(d=>d.highest_board)),x=i=>m.l+(rows.length===1?iw/2:i*iw/(rows.length-1)),y=v=>m.t+ih-v/max*ih;const ticks=[0,2,4,6,8,10].filter(v=>v<=max);let svg=`<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><defs><linearGradient id="lineGradient"><stop stop-color="#ff4861"/><stop offset="1" stop-color="#ff9068"/></linearGradient><linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#ff5b61" stop-opacity=".22"/><stop offset="1" stop-color="#ff5b61" stop-opacity="0"/></linearGradient></defs>`;ticks.forEach(t=>svg+=`<line class="grid-line" x1="${m.l}" y1="${y(t)}" x2="${w-m.r}" y2="${y(t)}"/><text class="axis-label" x="${m.l-10}" y="${y(t)+4}" text-anchor="end">${t}</text>`);const pts=rows.map((d,i)=>`${x(i)},${y(d.highest_board)}`).join(' ');svg+=`<path class="area" d="M${x(0)},${m.t+ih} L${pts.replaceAll(' ',', L')} L${x(rows.length-1)},${m.t+ih} Z"/><polyline class="trend" points="${pts}"/>`;const every=Math.max(1,Math.ceil(rows.length/(w<600?5:10)));rows.forEach((d,i)=>{if(i%every===0||i===rows.length-1)svg+=`<text class="axis-label" x="${x(i)}" y="${h-12}" text-anchor="middle">${d.date.slice(5).replace('-','/')}</text>`;svg+=`<text class="point-label" x="${x(i)}" y="${Math.max(15,y(d.highest_board)-11)}" text-anchor="middle">${d.highest_board}</text><circle class="point" data-i="${i}" cx="${x(i)}" cy="${y(d.highest_board)}" r="4" tabindex="0"/>`});svg+='</svg><div class="tooltip" hidden></div>';dom.chart.innerHTML=svg;const tip=dom.chart.querySelector('.tooltip');dom.chart.querySelectorAll('.point').forEach(c=>{const show=()=>{const d=rows[+c.dataset.i],names=(d.highest_stocks||[]).map(s=>typeof s==='string'?s:s.name).filter(Boolean);tip.innerHTML=`<span>${esc(d.date)}</span><strong>${d.highest_board} 板</strong><em>${names.length?esc(names.join('、')):'最高板股票名称暂无历史数据'}</em>`;tip.hidden=false;const left=Math.max(90,Math.min(w-90,Number(c.getAttribute('cx'))));tip.style.left=`${left}px`;tip.style.top=`${c.getAttribute('cy')}px`};c.onmouseenter=show;c.onfocus=show;c.onmouseleave=()=>tip.hidden=true;c.onblur=()=>tip.hidden=true});const vals=rows.map(d=>d.highest_board);dom.chartSummary.textContent=`区间最高 ${Math.max(...vals)} 板 · 区间最低 ${Math.min(...vals)} 板`}
+
+function renderTemperatureChart(allRows){const p=dom.temperaturePeriod.value,start=p==='all'?0:Math.max(0,allRows.length-Number(p)),rows=allRows.slice(start),temps=temperatureSeries(allRows).slice(start),box=dom.temperatureChart.getBoundingClientRect(),w=Math.max(box.width,320),h=Math.max(box.height,260),m={t:34,r:22,b:38,l:42},iw=w-m.l-m.r,ih=h-m.t-m.b,x=i=>m.l+(rows.length===1?iw/2:i*iw/(rows.length-1)),y=v=>m.t+ih-v/100*ih,ticks=[0,20,40,60,80,100];let svg=`<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><defs><linearGradient id="temperatureGradient" x1="0" y1="1" x2="0" y2="0"><stop stop-color="#54b8ff"/><stop offset=".55" stop-color="#ffbd59"/><stop offset="1" stop-color="#ff5b61"/></linearGradient><linearGradient id="temperatureArea" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#ffbd59" stop-opacity=".18"/><stop offset="1" stop-color="#54b8ff" stop-opacity=".02"/></linearGradient></defs>`;[[80,100,'hot'],[60,80,'warm'],[40,60,'neutral'],[20,40,'cool'],[0,20,'ice']].forEach(([lo,hi,cls])=>svg+=`<rect class="temperature-zone zone-${cls}" x="${m.l}" y="${y(hi)}" width="${iw}" height="${y(lo)-y(hi)}"/>`);ticks.forEach(t=>svg+=`<line class="grid-line" x1="${m.l}" y1="${y(t)}" x2="${w-m.r}" y2="${y(t)}"/><text class="axis-label" x="${m.l-10}" y="${y(t)+4}" text-anchor="end">${t}</text>`);const pts=temps.map((t,i)=>`${x(i)},${y(t.value)}`).join(' ');svg+=`<path class="temperature-area" d="M${x(0)},${m.t+ih} L${pts.replaceAll(' ',', L')} L${x(rows.length-1)},${m.t+ih} Z"/><polyline class="temperature-trend" points="${pts}"/>`;const every=Math.max(1,Math.ceil(rows.length/(w<600?5:10)));rows.forEach((d,i)=>{const t=temps[i];if(i%every===0||i===rows.length-1)svg+=`<text class="axis-label" x="${x(i)}" y="${h-12}" text-anchor="middle">${d.date.slice(5).replace('-','/')}</text>`;svg+=`<text class="point-label temperature-point-label" x="${x(i)}" y="${Math.max(15,y(t.value)-11)}" text-anchor="middle">${t.value}</text><circle class="temperature-point" data-i="${i}" cx="${x(i)}" cy="${y(t.value)}" r="4" tabindex="0"/>`});svg+='</svg><div class="tooltip temperature-tooltip" hidden></div>';dom.temperatureChart.innerHTML=svg;const tip=dom.temperatureChart.querySelector('.tooltip');dom.temperatureChart.querySelectorAll('.temperature-point').forEach(c=>{const show=()=>{const i=+c.dataset.i,d=rows[i],t=temps[i],direction=t.delta>0?`升温 +${t.delta}`:t.delta<0?`降温 ${t.delta}`:'温度持平',model=t.version==='relay-v2'?'接力温度V2':'历史温度V1';tip.innerHTML=`<span>${esc(d.date)} · ${model}</span><strong>${t.value}° · ${esc(temperatureLabel(t.value,t.delta))}</strong><em>${direction}</em>`;tip.hidden=false;const left=Math.max(90,Math.min(w-90,Number(c.getAttribute('cx'))));tip.style.left=`${left}px`;tip.style.top=`${c.getAttribute('cy')}px`};c.onmouseenter=show;c.onfocus=show;c.onmouseleave=()=>tip.hidden=true;c.onblur=()=>tip.hidden=true});const values=temps.map(t=>t.value),latest=temps.at(-1);dom.temperatureChartSummary.textContent=`最新 ${latest.value}° · 区间最高 ${Math.max(...values)}° · 最低 ${Math.min(...values)}°`}
+
+function renderPhaseChart(allRows){const p=dom.phasePeriod.value,start=p==='all'?0:Math.max(0,allRows.length-Number(p)),allTemps=temperatureSeries(allRows),allStates=manualCycleStates(allRows),rows=allRows.slice(start),temps=allTemps.slice(start),states=allStates.slice(start),phases=states.map(s=>s.display),levels={'退潮冰点':0,'混沌冰点':0,'退潮期':1,'混沌期':2,'混沌 · 修复观察':2,'高位分歧':3,'主升→分歧':3,'主升启动':4,'主升期':5,'主升':5,'未填写':null},colors={'退潮冰点':'#8ca9ff','混沌冰点':'#8ca9ff','退潮期':'#2ecf8f','混沌期':'#ffbd59','混沌 · 修复观察':'#ffbd59','高位分歧':'#ffd07d','主升→分歧':'#ffd07d','主升启动':'#64a8ff','主升期':'#ff5b61','主升':'#ff5b61','未填写':'#697386'},box=dom.phaseChart.getBoundingClientRect(),w=Math.max(box.width,320),h=Math.max(box.height,260),m={t:40,r:24,b:38,l:58},iw=w-m.l-m.r,ih=h-m.t-m.b,x=i=>m.l+(rows.length===1?iw/2:i*iw/(rows.length-1)),y=phase=>m.t+ih-(levels[phase]===null?2:(levels[phase]??2))/5*ih,names=['冰点','退潮','混沌','分歧','主升'];let svg=`<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><defs><linearGradient id="phaseLineGradient"><stop stop-color="#64a8ff"/><stop offset=".5" stop-color="#ffbd59"/><stop offset="1" stop-color="#ff5b61"/></linearGradient></defs>`;names.forEach((name,i)=>{const yy=m.t+ih-i/4*ih;svg+=`<line class="grid-line" x1="${m.l}" y1="${yy}" x2="${w-m.r}" y2="${yy}"/><text class="axis-label phase-axis-label" x="${m.l-12}" y="${yy+4}" text-anchor="end">${name}</text>`});const pts=phases.map((phase,i)=>`${x(i)},${y(phase)}`).join(' ');svg+=`<polyline class="phase-trend" points="${pts}"/>`;const every=Math.max(1,Math.ceil(rows.length/(w<600?5:10)));rows.forEach((d,i)=>{const phase=phases[i],state=states[i],yy=y(phase);if(i%every===0||i===rows.length-1)svg+=`<text class="axis-label" x="${x(i)}" y="${h-12}" text-anchor="middle">${d.date.slice(5).replace('-','/')}</text>`;svg+=`<text class="phase-point-label" x="${x(i)}" y="${Math.max(16,yy-12)}" text-anchor="middle">${state.display}</text><circle class="phase-point" data-i="${i}" cx="${x(i)}" cy="${yy}" r="5" tabindex="0" style="stroke:${colors[phase]||colors.分歧}"/>`});svg+='</svg><div class="tooltip phase-tooltip" hidden></div>';dom.phaseChart.innerHTML=svg;const tip=dom.phaseChart.querySelector('.tooltip');dom.phaseChart.querySelectorAll('.phase-point').forEach(c=>{const show=()=>{const i=+c.dataset.i,d=rows[i],phase=phases[i],state=states[i],temp=temps[i];tip.innerHTML=`<span>${esc(d.date)} · ${esc(state.regime)}已持续${state.duration}日</span><strong style="color:${colors[phase]}">${esc(state.display)}</strong><em>风控温度 ${temp.value}° · 动量 ${state.momentum>0?'+':''}${state.momentum.toFixed(1)}</em><em>${esc(state.reason)}</em><em>${esc(state.action)}</em>`;tip.hidden=false;const left=Math.max(90,Math.min(w-90,Number(c.getAttribute('cx'))));tip.style.left=`${left}px`;tip.style.top=`${c.getAttribute('cy')}px`};c.onmouseenter=show;c.onfocus=show;c.onmouseleave=()=>tip.hidden=true;c.onblur=()=>tip.hidden=true});const latest=states.at(-1).display,counts=phases.reduce((a,v)=>(a[v]=(a[v]||0)+1,a),{}),dominant=Object.entries(counts).sort((a,b)=>b[1]-a[1])[0]?.[0]||latest;dom.phaseChartSummary.textContent=`最新 ${latest} · 区间主要阶段 ${dominant}`}
+
+function metricSpec(rows,mode){
+  const value=(d,k)=>hasNumber(d[k])?Number(d[k]):null,delta=(a,b)=>hasNumber(a)&&hasNumber(b)?a-b:null;
+  if(mode==='breadth'){const values=rows.map(d=>hasNumber(d.up_count)&&hasNumber(d.down_count)&&d.up_count+d.down_count>0?d.up_count/(d.up_count+d.down_count)*100:null),present=values.filter(hasNumber);return {title:'每日市场广度（剔除平盘）',kicker:'MARKET BREADTH',series:[{name:'涨跌样本中的上涨占比',color:'#ff6b70',values}],min:0,max:100,tick:v=>`${Math.round(v)}%`,point:v=>`${Math.round(v)}%`,detail:d=>`${fmt(d.up_count)} 涨 / ${fmt(d.down_count)} 跌 · 涨跌差 ${fmt(delta(d.up_count,d.down_count))}`,summary:()=>`最新 ${hasNumber(values.at(-1))?values.at(-1).toFixed(1)+'%':'—'} · 有效 ${present.length}/${rows.length}日`}}
+  if(mode==='limits'){const up=rows.map(d=>value(d,'limit_up_count')),down=rows.map(d=>value(d,'limit_down_count')),max=Math.max(20,Math.ceil(Math.max(0,...up.filter(hasNumber),...down.filter(hasNumber))*1.12/20)*20);return {title:'每日非ST涨跌停家数',kicker:'LIMIT UP / DOWN',series:[{name:'涨停家数',color:'#ff5b61',values:up},{name:'跌停家数',color:'#2ecf8f',values:down}],min:0,max,tick:v=>Math.round(v),point:v=>Math.round(v),detail:d=>`涨停 ${fmt(d.limit_up_count)} · 跌停 ${fmt(d.limit_down_count)} · 净涨停 ${fmt(delta(d.limit_up_count,d.limit_down_count))}`,summary:()=>`最新 ${fmt(up.at(-1))} 涨停 / ${fmt(down.at(-1))} 跌停 · 缺失日期不绘制为0`}}
+  const values=rows.map(d=>value(d,'turnover_yi')),present=values.filter(hasNumber),rawMin=present.length?Math.min(...present):0,rawMax=Math.max(0,...present),min=Math.max(0,Math.floor(rawMin*.94/1000)*1000),max=Math.max(min+1000,Math.ceil(rawMax*1.04/1000)*1000);return {title:'每日成交额（历史范围见口径说明）',kicker:'MARKET TURNOVER',series:[{name:'成交额',color:'#64a8ff',values}],min,max,tick:v=>`${(v/10000).toFixed(1)}万`,point:v=>`${(v/10000).toFixed(2)}万`,detail:(d,i)=>{const prior=i?values[i-1]:null,change=hasNumber(values[i])&&hasNumber(prior)&&prior>0?(values[i]-prior)/prior*100:null;return `${fmt(values[i])} 亿元 · 较前日 ${change===null?'—':change.toFixed(1)+'%'}`},summary:()=>`最新 ${fmt(values.at(-1))} 亿元 · 历史跨来源对比仅供参考`}
+}
+
+function renderMetricChart(allRows){const p=dom.metricPeriod.value,start=p==='all'?0:Math.max(0,allRows.length-Number(p)),rows=allRows.slice(start),spec=metricSpec(rows,metricMode),box=dom.metricChart.getBoundingClientRect(),w=Math.max(box.width,320),h=Math.max(box.height,260),m={t:42,r:26,b:38,l:58},iw=w-m.l-m.r,ih=h-m.t-m.b,x=i=>m.l+(rows.length===1?iw/2:i*iw/(rows.length-1)),y=v=>m.t+ih-(v-spec.min)/(spec.max-spec.min)*ih,ticks=Array.from({length:6},(_,i)=>spec.min+(spec.max-spec.min)*i/5);dom.metricModalTitle.textContent=spec.title;dom.metricModalKicker.textContent=spec.kicker;let svg=`<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">`;ticks.forEach(t=>svg+=`<line class="grid-line" x1="${m.l}" y1="${y(t)}" x2="${w-m.r}" y2="${y(t)}"/><text class="axis-label" x="${m.l-10}" y="${y(t)+4}" text-anchor="end">${spec.tick(t)}</text>`);const every=Math.max(1,Math.ceil(rows.length/(w<600?5:10)));rows.forEach((d,i)=>{if(i%every===0||i===rows.length-1)svg+=`<text class="axis-label" x="${x(i)}" y="${h-12}" text-anchor="middle">${d.date.slice(5).replace('-','/')}</text>`});spec.series.forEach((series,seriesIndex)=>{let segments=[],part=[];series.values.forEach((v,i)=>{if(hasNumber(v))part.push(`${x(i)},${y(v)}`);else if(part.length){segments.push(part.join(' '));part=[]}});if(part.length)segments.push(part.join(' '));svg+=segments.map(pts=>`<polyline class="metric-trend" points="${pts}" style="stroke:${series.color}"/>`).join('');series.values.forEach((v,i)=>{if(!hasNumber(v))return;const labelY=seriesIndex===0?Math.max(17,y(v)-12):Math.min(h-42,y(v)+20);svg+=`<text class="metric-point-label" x="${x(i)}" y="${labelY}" text-anchor="middle" style="fill:${series.color}">${spec.point(v)}</text><circle class="metric-point" data-i="${i}" cx="${x(i)}" cy="${y(v)}" r="4" tabindex="0" style="stroke:${series.color}"/>`})});svg+='</svg><div class="tooltip metric-tooltip" hidden></div>';dom.metricChart.innerHTML=svg;const tip=dom.metricChart.querySelector('.tooltip');dom.metricChart.querySelectorAll('.metric-point').forEach(c=>{const show=()=>{const i=+c.dataset.i,d=rows[i];tip.innerHTML=`<span>${esc(d.date)}</span><strong>${esc(spec.title)}</strong><em>${esc(spec.detail(d,i))}</em>`;tip.hidden=false;const left=Math.max(100,Math.min(w-100,Number(c.getAttribute('cx'))));tip.style.left=`${left}px`;tip.style.top=`${c.getAttribute('cy')}px`};c.onmouseenter=show;c.onfocus=show;c.onmouseleave=()=>tip.hidden=true;c.onblur=()=>tip.hidden=true});dom.metricChartLegend.innerHTML=spec.series.map(s=>`<span class="metric-legend-item"><i style="background:${s.color}"></i>${s.name}</span>`).join('');dom.metricChartSummary.textContent=spec.summary()}
+
+function openMetricModal(mode,card){if(!payload)return;metricMode=mode;activeMetricCard=card;dom.metricPeriod.value=dom.period.value;dom.metricModal.hidden=false;card.setAttribute('aria-expanded','true');document.body.classList.add('modal-open');requestAnimationFrame(()=>renderMetricChart(payload.rows));dom.metricModalClose.focus()}
+function closeMetricModal(){dom.metricModal.hidden=true;if(activeMetricCard){activeMetricCard.setAttribute('aria-expanded','false');activeMetricCard.focus()}activeMetricCard=null;document.body.classList.remove('modal-open')}
+
+function openTemperatureModal(){if(!payload)return;dom.temperaturePeriod.value=dom.period.value;dom.temperatureModal.hidden=false;dom.temperatureCard.setAttribute('aria-expanded','true');document.body.classList.add('modal-open');requestAnimationFrame(()=>renderTemperatureChart(payload.rows));dom.temperatureModalClose.focus()}
+function closeTemperatureModal(){dom.temperatureModal.hidden=true;dom.temperatureCard.setAttribute('aria-expanded','false');document.body.classList.remove('modal-open');dom.temperatureCard.focus()}
+function openPhaseModal(){if(!payload)return;refreshCycleEditor(payload.rows);dom.phasePeriod.value=dom.period.value;dom.phaseModal.hidden=false;dom.phaseCard.setAttribute('aria-expanded','true');document.body.classList.add('modal-open');requestAnimationFrame(()=>renderPhaseChart(payload.rows));dom.phaseModalClose.focus()}
+function closePhaseModal(){saveManualCycle();dom.phaseModal.hidden=true;dom.phaseCard.setAttribute('aria-expanded','false');document.body.classList.remove('modal-open');dom.phaseCard.focus()}
+
+async function load(){dom.reloadBtn.disabled=true;dom.reloadBtn.textContent='读取中…';try{const r=await fetch(`data/market.json?t=${Date.now()}`);payload=await r.json();await loadManualCycles();renderKpis(payload.rows);updateTemperatureExplanation(payload.rows);renderTable(payload.rows);renderChart(payload.rows);renderRelayMatrix(payload.rows);await loadCoreStocks();await loadCoreTracking();if(!dom.temperatureModal.hidden)renderTemperatureChart(payload.rows);if(!dom.phaseModal.hidden)renderPhaseChart(payload.rows);if(!dom.metricModal.hidden)renderMetricChart(payload.rows)}catch(e){dom.updateTime.textContent='数据读取失败，请运行本地服务'}finally{dom.reloadBtn.disabled=false;dom.reloadBtn.textContent='刷新页面数据'}}
+dom.relayPeriod.onchange=()=>renderRelayMatrix(payload.rows);
+function saveManualCycle(){if(!payload||!dom.phaseDate)return;const date=dom.phaseDate.value,choice=dom.phaseChoice.value;if(choice)manualCycles[date]=choice;else delete manualCycles[date];localStorage.setItem('a-share-manual-cycles',JSON.stringify(manualCycles));persistManualCycles();renderKpis(payload.rows);renderTable(payload.rows);renderRelayMatrix(payload.rows);if(!dom.phaseModal.hidden)renderPhaseChart(payload.rows)}
+dom.phaseDate.onchange=()=>{dom.phaseChoice.value=manualCycleFor(dom.phaseDate.value)};dom.phaseChoice.onchange=saveManualCycle;dom.phaseSave.onclick=saveManualCycle;
+window.addEventListener('beforeunload',()=>{const body=JSON.stringify({cycles:manualCycles});try{navigator.sendBeacon('/api/manual-cycles',new Blob([body],{type:'application/json'}))}catch{}});
+dom.coreStockForm.onsubmit=saveCoreStock;document.addEventListener('click',e=>{const b=e.target.closest?.('[data-core-delete]');if(b)deleteCoreStock(b.dataset.coreDelete,b.dataset.coreInstrument)});
+dom.reloadBtn.onclick=load;dom.period.onchange=()=>{renderChart(payload.rows);dom.temperaturePeriod.value=dom.period.value;dom.phasePeriod.value=dom.period.value;dom.metricPeriod.value=dom.period.value;if(!dom.temperatureModal.hidden)renderTemperatureChart(payload.rows);if(!dom.phaseModal.hidden)renderPhaseChart(payload.rows);if(!dom.metricModal.hidden)renderMetricChart(payload.rows)};dom.temperaturePeriod.onchange=()=>{dom.period.value=dom.temperaturePeriod.value;dom.phasePeriod.value=dom.temperaturePeriod.value;dom.metricPeriod.value=dom.temperaturePeriod.value;renderChart(payload.rows);renderTemperatureChart(payload.rows)};dom.phasePeriod.onchange=()=>{dom.period.value=dom.phasePeriod.value;dom.temperaturePeriod.value=dom.phasePeriod.value;dom.metricPeriod.value=dom.phasePeriod.value;renderChart(payload.rows);renderPhaseChart(payload.rows)};dom.metricPeriod.onchange=()=>{dom.period.value=dom.metricPeriod.value;dom.temperaturePeriod.value=dom.metricPeriod.value;dom.phasePeriod.value=dom.metricPeriod.value;renderChart(payload.rows);renderMetricChart(payload.rows)};dom.temperatureCard.onclick=openTemperatureModal;dom.phaseCard.onclick=openPhaseModal;dom.breadthCard.onclick=()=>openMetricModal('breadth',dom.breadthCard);dom.limitsCard.onclick=()=>openMetricModal('limits',dom.limitsCard);dom.turnoverCard.onclick=()=>openMetricModal('turnover',dom.turnoverCard);dom.temperatureModalClose.onclick=closeTemperatureModal;dom.phaseModalClose.onclick=closePhaseModal;dom.metricModalClose.onclick=closeMetricModal;dom.temperatureModal.onclick=e=>{if(e.target===dom.temperatureModal)closeTemperatureModal()};dom.phaseModal.onclick=e=>{if(e.target===dom.phaseModal)closePhaseModal()};dom.metricModal.onclick=e=>{if(e.target===dom.metricModal)closeMetricModal()};document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!dom.temperatureModal.hidden)closeTemperatureModal();else if(!dom.phaseModal.hidden)closePhaseModal();else if(!dom.metricModal.hidden)closeMetricModal()}});window.addEventListener('resize',()=>{if(payload){renderChart(payload.rows);if(!dom.temperatureModal.hidden)renderTemperatureChart(payload.rows);if(!dom.phaseModal.hidden)renderPhaseChart(payload.rows);if(!dom.metricModal.hidden)renderMetricChart(payload.rows)}});/* Unified refresh is owned by environment.js. */
+function enrichTemperatureTooltip(event){const point=event.target.closest?.('.temperature-point');if(!point||!payload)return;const period=dom.temperaturePeriod.value,start=period==='all'?0:Math.max(0,payload.rows.length-Number(period)),allTemps=temperatureSeries(payload.rows),rows=payload.rows.slice(start),temps=allTemps.slice(start),states=cycleSeries(payload.rows,allTemps).slice(start),i=Number(point.dataset.i),d=rows[i],t=temps[i],state=states[i],tip=dom.temperatureChart.querySelector('.tooltip');if(!d||!t||!tip)return;const direction=t.delta>0?`升温 +${t.delta}`:t.delta<0?`降温 ${t.delta}`:'温度持平',model=t.version==='relay-v2'?'接力温度V2':'历史温度V1';tip.innerHTML=`<span>${esc(d.date)} · ${model}</span><strong>${t.value}° · ${esc(state.display)}</strong><em>${direction}</em><em>${t.gate.level?'风险提示：'+esc(t.gate.flags.join('、')):'未触发风险限温'}</em>`}
+
+dom.temperatureChart.addEventListener('mouseover',enrichTemperatureTooltip);dom.temperatureChart.addEventListener('focusin',enrichTemperatureTooltip);
+load();
