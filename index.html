@@ -26,7 +26,7 @@
       <button id="phaseCard" class="metric featured drilldown-card" type="button" aria-controls="phaseModal" aria-expanded="false"><span>鎯呯华鍛ㄦ湡</span><strong id="phase">鈥?/strong><small id="phaseHint"></small></button>
       <button id="temperatureCard" class="metric temperature-card drilldown-card" type="button" aria-controls="temperatureModal" aria-expanded="false"><span>甯傚満娓╁害</span><strong id="temperature">鈥?/strong><small id="temperatureSub">绛夊緟璁＄畻</small></button>
       <button id="multiBoardCard" class="metric multiboard-card drilldown-card" type="button" aria-controls="multiBoardModal" aria-expanded="false"><span>杩炴澘鎸囨暟</span><strong id="multiBoardValue">鈥?/strong><small id="multiBoardSub">鍚岃姳椤?883410</small></button>
-      <article class="metric"><span>鏈€楂樿繛鏉?/span><strong id="height">鈥?/strong><small>鍓旈櫎 ST</small></article>
+      <button id="heightCard" class="metric drilldown-card" type="button" aria-controls="heightModal" aria-expanded="false"><span>鏈€楂樿繛鏉?/span><strong id="height">鈥?/strong><small>鍓旈櫎 ST</small></button>
       <article class="metric"><span>娑ㄨ穼瀹舵暟宸?/span><strong id="diff">鈥?/strong><small id="diffSub">鈥?/small></article>
       <button id="limitsCard" class="metric drilldown-card" type="button" aria-controls="metricModal" aria-expanded="false"><span>闈濻T娑ㄥ仠 / 璺屽仠</span><strong id="limits">鈥?/strong><small id="limitDiff">鈥?/small></button>
       <button id="turnoverCard" class="metric drilldown-card" type="button" aria-controls="metricModal" aria-expanded="false"><span>娌繁鎴愪氦棰?/span><strong id="turnover">鈥?/strong><small>浜垮厓</small></button>
@@ -66,15 +66,6 @@
       <div id="multiBoardOverviewChart" class="chart" role="img" aria-label="杩炴澘鎸囨暟鎶樼嚎鍥?></div>
       <div class="chart-foot multiboard-foot"><span><i class="legend-line multiboard-legend"></i>鎸囨暟</span><span><i class="ma-key ma5"></i>MA5</span><span><i class="ma-key ma10"></i>MA10</span><span><i class="ma-key ma20"></i>MA20</span><span id="multiBoardOverviewSummary">鈥?/span></div>
     </section>
-    <section class="chart-panel">
-      <div class="section-head">
-        <div><span class="section-kicker">HEIGHT TREND</span><h2>姣忔棩鏈€楂樿繛鏉?/h2></div>
-        <label>瑙傚療绐楀彛<select id="period"><option value="20">杩?0鏃?/option><option value="40">杩?0鏃?/option><option value="60">杩?0鏃?/option><option value="90">杩?0鏃?/option><option value="all">鍏ㄩ儴</option></select></label>
-      </div>
-      <div id="chart" class="chart" role="img" aria-label="姣忔棩鏈€楂樿繛鏉挎姌绾垮浘"></div>
-      <div class="chart-foot"><span><i class="legend-line"></i>鏈€楂樿繛鏉?/span><span id="chartSummary">鈥?/span></div>
-    </section>
-
     <details class="table-panel" style="padding:20px"><summary style="cursor:pointer;font-size:16px;color:#b7cfff">鍘嗗彶澶嶇洏鏄庣粏</summary>
       <div class="section-head">
         <div><span class="section-kicker">DAILY REVIEW</span><h2>姣忔棩澶嶇洏鏄庣粏</h2></div>
@@ -89,6 +80,16 @@
     </details>
 <footer>璁″垝鏇存柊锛氫氦鏄撴棩09:30鈥?1:30銆?3:00鈥?4:30姣忓崐灏忔椂锛?5:10鏀剁洏鏇存柊 路 瀹為檯鏁版嵁鏃剁偣瑙侀〉棣?/footer>
   </main>
+  <div id="heightModal" class="temperature-modal" hidden>
+    <section class="temperature-dialog" role="dialog" aria-modal="true" aria-labelledby="heightModalTitle">
+      <div class="section-head temperature-dialog-head">
+        <div><span class="section-kicker">HEIGHT TREND</span><h2 id="heightModalTitle">姣忔棩鏈€楂樿繛鏉?/h2></div>
+        <div class="temperature-dialog-actions"><label>瑙傚療绐楀彛<select id="period"><option value="20">杩?0鏃?/option><option value="40">杩?0鏃?/option><option value="60">杩?0鏃?/option><option value="90">杩?0鏃?/option><option value="all">鍏ㄩ儴</option></select></label><button id="heightModalClose" class="modal-close" type="button" aria-label="鍏抽棴鏈€楂樿繛鏉胯蛋鍔?>脳</button></div>
+      </div>
+      <div id="chart" class="chart temperature-chart" role="img" aria-label="姣忔棩鏈€楂樿繛鏉挎姌绾垮浘"></div>
+      <div class="chart-foot"><span><i class="legend-line"></i>鏈€楂樿繛鏉?/span><span id="chartSummary">鈥?/span></div>
+    </section>
+  </div>
   <div id="temperatureModal" class="temperature-modal" hidden>
     <section class="temperature-dialog" role="dialog" aria-modal="true" aria-labelledby="temperatureModalTitle">
       <div class="section-head temperature-dialog-head">
@@ -142,7 +143,7 @@
       <div class="chart-foot"><span><i class="legend-line multiboard-legend"></i>鎸囨暟 路 MA5 路 MA10 路 MA20</span><span id="multiBoardChartSummary">鈥?/span></div>
     </section>
   </div>
-  <script src="app.js?v=20261010-multiboard4"></script>
+  <script src="app.js?v=20261010-height-modal1"></script>
 <script src="environment.js?v=20260926-relay-autoload1"></script><script src="public-readonly.js?v=1"></script>
 </body>
 </html>
