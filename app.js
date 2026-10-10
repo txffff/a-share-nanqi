@@ -326,7 +326,7 @@ function renderRelayMatrix(allRows){
  const cells=specs.map(([label,key,risk,nget])=>`<tr><th>${label}</th>${rows.map((d,i)=>{const v=key==='__relay_strength'?(() => {const x=relayStrengthRank(start+i);return x.rank==null?null:x.rank/100})():d[key],n=nget(d);if(!hasNumber(v))return '<td class="relay-missing">—</td>';const history=key==='__relay_strength'?relayStrengthRank(start+i):rollingRank(start+i,key,risk),rank=key==='__relay_strength'?history.rank:(history.rank??50);return `<td class="relay-heat ${heatClass(rank)}" title="${esc(d.date)} · ${label} ${key==='__relay_strength'?rank.toFixed(1)+'分':pct(v)}${hasNumber(n)?` · 有效${fmt(n)}只`:''}${key==='__relay_strength'?` · ${history.detail}`:' · 自身滚动60日强弱百分位'}">${key==='__relay_strength'?rank.toFixed(1):pct(v)}<small>${key==='__relay_strength'?'数量/质量/共振':'P'+Math.round(rank)}</small></td>`}).join('')}</tr>`).join('');
  const tempRow=`<tr><th>情绪温度</th>${temps.map(t=>`<td style="${temperatureHeatStyle(t.value)}" title="模型温度 ${t.value}°">${t.value}°</td>`).join('')}</tr>`;
  const phaseRow=`<tr><th>周期阶段</th>${states.map(s=>`<td class="relay-phase phase-${s.phase}" title="${esc(s.reason)}">${esc(s.display)}</td>`).join('')}</tr>`;
- dom.relayMatrixBody.innerHTML=cells+tempRow+phaseRow;const wrap=dom.relayMatrixBody.closest?.('.relay-matrix-wrap');if(wrap)requestAnimationFrame(()=>{wrap.scrollLeft=wrap.scrollWidth-wrap.clientWidth});
+ dom.relayMatrixBody.innerHTML=cells+tempRow+phaseRow;const wrap=dom.relayMatrixBody.closest?.('.relay-matrix-wrap');if(wrap&&!wrap.dataset.initialPositioned)requestAnimationFrame(()=>{wrap.scrollLeft=wrap.scrollWidth-wrap.clientWidth;wrap.dataset.initialPositioned='true'});
 }
 
 function renderCoreStocks(entries){
