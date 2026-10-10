@@ -25,6 +25,7 @@
       <button id="phaseCard" class="metric featured drilldown-card" type="button" aria-controls="phaseModal" aria-expanded="false"><span>鎯呯华鍛ㄦ湡</span><strong id="phase">鈥?/strong><small id="phaseHint"></small></button>
       <button id="temperatureCard" class="metric temperature-card drilldown-card" type="button" aria-controls="temperatureModal" aria-expanded="false"><span>甯傚満娓╁害</span><strong id="temperature">鈥?/strong><small id="temperatureSub">绛夊緟璁＄畻</small></button>
       <button id="breadthCard" class="metric drilldown-card" type="button" aria-controls="metricModal" aria-expanded="false"><span>甯傚満骞垮害</span><strong id="breadth">鈥?/strong><small id="breadthSub">涓婃定鍗犳瘮</small></button>
+      <button id="multiBoardCard" class="metric multiboard-card drilldown-card" type="button" aria-controls="multiBoardModal" aria-expanded="false"><span>鏈€杩戝鏉挎寚鏁?/span><strong id="multiBoardValue">鈥?/strong><small id="multiBoardSub">鍚岃姳椤?883410</small></button>
       <article class="metric"><span>鏈€楂樿繛鏉?/span><strong id="height">鈥?/strong><small>鍓旈櫎 ST</small></article>
       <article class="metric"><span>娑ㄨ穼瀹舵暟宸?/span><strong id="diff">鈥?/strong><small id="diffSub">鈥?/small></article>
       <button id="limitsCard" class="metric drilldown-card" type="button" aria-controls="metricModal" aria-expanded="false"><span>闈濻T娑ㄥ仠 / 璺屽仠</span><strong id="limits">鈥?/strong><small id="limitDiff">鈥?/small></button>
@@ -123,7 +124,17 @@
       <div class="chart-foot"><span id="metricChartLegend"></span><span id="metricChartSummary">鈥?/span></div>
     </section>
   </div>
-  <script src="app.js?v=20261008-cycle-restore1"></script>
+  <div id="multiBoardModal" class="temperature-modal" hidden>
+    <section class="temperature-dialog" role="dialog" aria-modal="true" aria-labelledby="multiBoardModalTitle">
+      <div class="section-head temperature-dialog-head">
+        <div><span class="section-kicker">THS 883410</span><h2 id="multiBoardModalTitle">鏈€杩戝鏉挎寚鏁?/h2></div>
+        <div class="temperature-dialog-actions"><label>瑙傚療绐楀彛<select id="multiBoardPeriod"><option value="20">杩?0鏃?/option><option value="40">杩?0鏃?/option><option value="60">杩?0鏃?/option><option value="90">杩?0鏃?/option><option value="all">鍏ㄩ儴</option></select></label><button id="multiBoardModalClose" class="modal-close" type="button" aria-label="鍏抽棴鏈€杩戝鏉挎寚鏁拌蛋鍔?>脳</button></div>
+      </div>
+      <div id="multiBoardChart" class="chart temperature-chart" role="img" aria-label="鏈€杩戝鏉挎寚鏁版姌绾垮浘"></div>
+      <div class="chart-foot"><span><i class="legend-line multiboard-legend"></i>鏈€杩戝鏉挎寚鏁?/span><span id="multiBoardChartSummary">鈥?/span></div>
+    </section>
+  </div>
+  <script src="app.js?v=20261010-multiboard1"></script>
 <script src="environment.js?v=20260926-relay-autoload1"></script><script src="public-readonly.js?v=1"></script>
 </body>
 </html>
