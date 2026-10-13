@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>A股南七作手</title>
-  <link rel="stylesheet" href="styles.css?v=20260912-compact-table2">
-<link rel="stylesheet" href="environment.css?v=20260930-relay-colors2">
-<link rel="stylesheet" href="public-readonly.css?v=1"></head>
+  <link rel="stylesheet" href="styles.css?v=20261010-review-signals2">
+<link rel="stylesheet" href="environment.css?v=20261010-morandi-percentile1">  <link rel="stylesheet" href="public-readonly.css?v=1">
+</head>
 <body>
   <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
   <main class="shell">
@@ -22,10 +22,11 @@
     </header>
 
     <section class="hero-grid" aria-label="市场核心指标">
+      <button id="breadthCard" type="button" hidden><span>市场广度</span><strong id="breadth">—</strong><small id="breadthSub">上涨占比</small></button>
       <button id="phaseCard" class="metric featured drilldown-card" type="button" aria-controls="phaseModal" aria-expanded="false"><span>情绪周期</span><strong id="phase">—</strong><small id="phaseHint"></small></button>
       <button id="temperatureCard" class="metric temperature-card drilldown-card" type="button" aria-controls="temperatureModal" aria-expanded="false"><span>市场温度</span><strong id="temperature">—</strong><small id="temperatureSub">等待计算</small></button>
-      <button id="breadthCard" class="metric drilldown-card" type="button" aria-controls="metricModal" aria-expanded="false"><span>市场广度</span><strong id="breadth">—</strong><small id="breadthSub">上涨占比</small></button>
-      <article class="metric"><span>最高连板</span><strong id="height">—</strong><small>剔除 ST</small></article>
+      <button id="multiBoardCard" class="metric multiboard-card drilldown-card" type="button" aria-controls="multiBoardModal" aria-expanded="false"><span>连板指数</span><strong id="multiBoardValue">—</strong><small id="multiBoardSub">同花顺 883410</small></button>
+      <button id="heightCard" class="metric drilldown-card" type="button" aria-controls="heightModal" aria-expanded="false"><span>最高连板</span><strong id="height">—</strong><small>剔除 ST</small></button>
       <article class="metric"><span>涨跌家数差</span><strong id="diff">—</strong><small id="diffSub">—</small></article>
       <button id="limitsCard" class="metric drilldown-card" type="button" aria-controls="metricModal" aria-expanded="false"><span>非ST涨停 / 跌停</span><strong id="limits">—</strong><small id="limitDiff">—</small></button>
       <button id="turnoverCard" class="metric drilldown-card" type="button" aria-controls="metricModal" aria-expanded="false"><span>沪深成交额</span><strong id="turnover">—</strong><small>亿元</small></button>
@@ -59,13 +60,12 @@
     </section>
     <section class="chart-panel">
       <div class="section-head">
-        <div><span class="section-kicker">HEIGHT TREND</span><h2>每日最高连板</h2></div>
-        <label>观察窗口<select id="period"><option value="20">近20日</option><option value="40">近40日</option><option value="60">近60日</option><option value="90">近90日</option><option value="all">全部</option></select></label>
+        <div><span class="section-kicker">THS 883410</span><h2>连板指数</h2></div>
+        <label>观察窗口<select id="multiBoardOverviewPeriod"><option value="20">近20日</option><option value="40">近40日</option><option value="60" selected>近60日</option><option value="90">近90日</option><option value="all">全部</option></select></label>
       </div>
-      <div id="chart" class="chart" role="img" aria-label="每日最高连板折线图"></div>
-      <div class="chart-foot"><span><i class="legend-line"></i>最高连板</span><span id="chartSummary">—</span></div>
+      <div id="multiBoardOverviewChart" class="chart" role="img" aria-label="连板指数折线图"></div>
+      <div class="chart-foot multiboard-foot"><span><i class="legend-line multiboard-legend"></i>指数</span><span><i class="ma-key ma5"></i>MA5</span><span><i class="ma-key ma10"></i>MA10</span><span><i class="ma-key ma20"></i>MA20</span><span id="multiBoardOverviewSummary">—</span></div>
     </section>
-
     <details class="table-panel" style="padding:20px"><summary style="cursor:pointer;font-size:16px;color:#b7cfff">历史复盘明细</summary>
       <div class="section-head">
         <div><span class="section-kicker">DAILY REVIEW</span><h2>每日复盘明细</h2></div>
@@ -80,6 +80,16 @@
     </details>
 <footer>计划更新：交易日09:30–11:30、13:00–14:30每半小时，15:10收盘更新 · 实际数据时点见页首</footer>
   </main>
+  <div id="heightModal" class="temperature-modal" hidden>
+    <section class="temperature-dialog" role="dialog" aria-modal="true" aria-labelledby="heightModalTitle">
+      <div class="section-head temperature-dialog-head">
+        <div><span class="section-kicker">HEIGHT TREND</span><h2 id="heightModalTitle">每日最高连板</h2></div>
+        <div class="temperature-dialog-actions"><label>观察窗口<select id="period"><option value="20">近20日</option><option value="40">近40日</option><option value="60">近60日</option><option value="90">近90日</option><option value="all">全部</option></select></label><button id="heightModalClose" class="modal-close" type="button" aria-label="关闭最高连板走势">×</button></div>
+      </div>
+      <div id="chart" class="chart temperature-chart" role="img" aria-label="每日最高连板折线图"></div>
+      <div class="chart-foot"><span><i class="legend-line"></i>最高连板</span><span id="chartSummary">—</span></div>
+    </section>
+  </div>
   <div id="temperatureModal" class="temperature-modal" hidden>
     <section class="temperature-dialog" role="dialog" aria-modal="true" aria-labelledby="temperatureModalTitle">
       <div class="section-head temperature-dialog-head">
@@ -123,7 +133,17 @@
       <div class="chart-foot"><span id="metricChartLegend"></span><span id="metricChartSummary">—</span></div>
     </section>
   </div>
-  <script src="app.js?v=20261008-cycle-restore1"></script>
-<script src="environment.js?v=20260926-relay-autoload1"></script>
-<script src="public-readonly.js?v=1"></script></body>
+  <div id="multiBoardModal" class="temperature-modal" hidden>
+    <section class="temperature-dialog" role="dialog" aria-modal="true" aria-labelledby="multiBoardModalTitle">
+      <div class="section-head temperature-dialog-head">
+        <div><span class="section-kicker">THS 883410</span><h2 id="multiBoardModalTitle">连板指数</h2></div>
+        <div class="temperature-dialog-actions"><label>观察窗口<select id="multiBoardPeriod"><option value="20">近20日</option><option value="40">近40日</option><option value="60" selected>近60日</option><option value="90">近90日</option><option value="all">全部</option></select></label><button id="multiBoardModalClose" class="modal-close" type="button" aria-label="关闭连板指数走势">×</button></div>
+      </div>
+      <div id="multiBoardChart" class="chart temperature-chart" role="img" aria-label="连板指数折线图"></div>
+      <div class="chart-foot"><span><i class="legend-line multiboard-legend"></i>指数 · MA5 · MA10 · MA20</span><span id="multiBoardChartSummary">—</span></div>
+    </section>
+  </div>
+  <script src="app.js?v=20261010-review-signals3"></script>
+<script src="environment.js?v=20260926-relay-autoload1"></script><script src="public-readonly.js?v=1"></script>
+</body>
 </html>

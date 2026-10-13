@@ -1,1 +1,1 @@
-{"state":"ok","last_success":"2026-10-09T15:11:01.389556+08:00","quote_time":"15:10:00","asof":"2026-10-09","final":true,"coverage":{"market_stocks":5558,"listed_stocks":5572,"history_received":5561,"history_expected":5561,"breadth_days":308,"feedback_days":28,"feedback_errors":[]}}
+{"state":"ok","last_success":"2026-10-13T14:42:05.848220+08:00","quote_time":"14:41:48","asof":"2026-10-13","final":false,"coverage":{"market_stocks":5560,"listed_stocks":5573,"history_received":5572,"history_expected":5572,"breadth_days":311,"feedback_days":30,"feedback_errors":[]}}
