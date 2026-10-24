@@ -23,9 +23,6 @@ dom.phaseCard.title+=` · ${liveMode?'暂未封板':'断板'}有效${failureN}/$
 if(liveMode){dom.phase.textContent+='（盘中）';dom.temperatureSub.innerHTML=dom.temperatureSub.innerHTML.replaceAll('断板','暂未封板');}
 q('#env-context').textContent=`${report.date} ${current?(db.quote_time||'15:00:00'):'收盘'} · ${liveMode?'盘中快照':'收盘数据'}`;
 dom.updateTime.textContent='最近成功更新 '+(db.fetched_at||db.market.updated_at).replace('T',' ').slice(0,19);dom.reloadBtn.textContent='立即更新';
-q('#coverage-detail').innerHTML=`<p>全市场有效报价 ${db.coverage?.market_stocks??'—'}/${db.coverage?.listed_stocks??'—'}只；历史日线 ${db.coverage?.history_received??'—'}/${db.coverage?.history_expected??'—'}只；广度记录 ${db.coverage?.breadth_days??'—'}日；接力反馈 ${db.coverage?.feedback_days??db.reports.length}日。失败行情项 ${db.coverage?.feedback_errors?.length??0}项。历史名单不含已经退市的股票。</p>`;
-q('#coverage-detail').innerHTML+=`<p>来源审查：已重取 ${db.audit?.limit_down_verified_days??'—'} 日历史跌停汇总核对；最近 ${db.audit?.recent_detail_days??'—'} 日留有跌停明细。历史原始值、修订差异均已保存。</p><div class="env-scroll"><table class="env-source-table"><thead><tr><th>指标</th><th>来源与范围</th></tr></thead><tbody>${[['广度、中位数、大跌占比',m.breadth_source||'历史公开汇总；回建范围见下方说明'],['涨停 / 跌停','非ST收盘封板；近期东方财富池，早期开盘红SJZT/SJDT字段。盘中为当前封板。'],['历史表中的涨停反馈',m.feedback_scope||'非ST各板块均值，含20%股票；昨涨停未封板包含昨日首板'],['接力结构与风险中的连板反馈','非ST 10%主板昨日二板及以上；收益以中位数显示。前日固定名单包含失败者。'],['成交额',m.turnover_source||'历史公开汇总，范围未完整留存']].map(([name,scope])=>`<tr><td>${name}</td><td>${safe(scope)}</td></tr>`).join('')}</tbody></table></div><p>上方市场广度为上涨÷（上涨＋下跌），不含平盘；下方大跌、下跌占比按全部有效报价计算，含平盘。两处使用同一组涨跌家数。早期“连板率”由当日连板数÷昨日涨停数近似，不能等同逐股晋级率；旧成交额跨来源比较仅供参考。</p>`;
-
 const metrics=[['平均涨跌幅','mean',true],['涨跌中位数','median',true],['跌幅≥5%占比','down5',false],['跌幅≥7%占比','down7',false],['跌停数量','limit',false],['下跌占比','down',false]];
 const pressureRows=metrics.map(([name,key,lower])=>{
  const v=getters[key](m),prior=mp?getters[key](mp):null,r=rank(rows,i,getters[key],lower),diff=valid(v)&&valid(prior)?(v-prior)*(key==='limit'?1:100):null;
