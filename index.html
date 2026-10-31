@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>A股南七作手</title>
+  <title>南七作手</title>
   <link rel="stylesheet" href="styles.css?v=20261010-review-signals2">
 <link rel="stylesheet" href="environment.css?v=20261010-morandi-percentile1">  <link rel="stylesheet" href="public-readonly.css?v=1">
 </head>
@@ -12,8 +12,7 @@
   <main class="shell">
     <header class="topbar">
       <div>
-        <div class="eyebrow"><span class="live-dot"></span> A-SHARE SENTIMENT TERMINAL</div>
-        <h1>A股南七作手</h1>
+        <h1>南七作手</h1>
       </div>
       <div class="top-actions">
         <div class="update-meta"><span>数据日期</span><strong id="tradeDate">—</strong><small id="updateTime">等待数据</small></div>
@@ -34,7 +33,7 @@
 
     
 
-    <section id="environment-panel" class="env-panel" aria-label="空仓与修复证据"><div class="env-heading"><div><h2>盘面观察</h2></div><label>回看日期 <select id="env-date"></select></label></div><div class="env-context" id="env-context"></div><div class="env-grid" id="env-cards"></div><details class="env-method"><summary>数据口径与覆盖</summary><div id="coverage-detail"></div><p>接力温度V2自2026-08-25起使用完整逐股名单；更早日期缺少同口径名单，保留历史温度V1，并在温度图提示中标明版本。两段适合分别观察方向和拐点，不直接比较绝对温度。</p><p>压力分位使用所选日之前250个交易日，不含当日。广度回建采用当前沪深北股票名单与前复权日线，存在退市遗漏、历史成分偏差；未获得报价的股票不填零。V2接力样本固定为前一交易日非ST沪深10%主板二板及以上股票，包含次日失败者；高位暂定义为4板及以上。</p><p>2026-08-25以前的“连板率”为当日连板数÷昨日涨停数的总量近似，只用于展示，不参与V1温度和周期判断。旧周期使用市场广度、涨跌停、炸板率、最高板和连板数量；恢复与主升分别要求连续改善和后续确认。</p><p>“连板日内中位”为固定样本今开→今收的中位数，用于识别承接和高开低走；“连板断板中位”为其中未续板股票昨收→今收的中位数，用于衡量接错后的代价。算术均值不参与V2核心评分。逐股数据不足60个有效交易日时使用绝对阈值，暂不使用短样本历史分位。</p><p>D日为收盘确认的连板终止日；D+1、D+2相对D日收盘累计计算，尚未发生的结果不展示。盘中仅记录暂未封板，不形成当日断板批次。收益是样本价格变化，不是实际打板收益。周期V3：有完整接力数据时与温度共用模型分，单独断板亏损不否决修复观察；修复确认要求连续改善与承接，风险独立展示。盘中判断未确认。规则仍需随实盘样本积累继续验证。</p><p>所有时间为北京时间。非交易日、行情日期未切换时跳过更新；上游延迟或失败会保留上一完整版本。</p></details></section>
+    <section id="environment-panel" class="env-panel" aria-label="空仓与修复证据"><div class="env-heading"><div><h2>盘面观察</h2></div><label>回看日期 <select id="env-date"></select></label></div><div class="env-context" id="env-context"></div><div class="env-grid" id="env-cards"></div></section>
     <section class="core-panel" aria-labelledby="corePoolTitle">
       <div class="section-head"><div><span class="section-kicker">MANUAL LEADERS</span><h2 id="corePoolTitle">核心股风向标</h2><p>你负责确认市场核心，系统按日期留存名单变化；淘汰记录不会覆盖历史。</p></div></div>
       <form id="coreStockForm" class="core-form">
